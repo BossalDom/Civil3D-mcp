@@ -194,9 +194,9 @@ Once loaded, three commands are available in the Civil 3D command line:
 
 | Command | Description |
 |---|---|
-| `MCPSTART` | Start the HTTP server (auto-starts on load) |
-| `MCPSTOP` | Stop the HTTP server |
-| `MCPSTATUS` | Show server status and port |
+| `C3DMCPSTART` | Start the JSON-RPC server (auto-starts on plugin load) |
+| `C3DMCPSTOP` | Stop the JSON-RPC server |
+| `C3DMCPSTATUS` | Show server status, port, and queue depth |
 
 ### 3 — Configure Your AI Client
 
@@ -712,12 +712,65 @@ For startup-suite and autoload registry details, use the version-specific guidan
 
 ---
 
+## Environment Variables
+
+The Node MCP server reads the following variables at startup. All are optional; defaults are shown in the **Default** column and are suitable for a local Civil 3D plus Copilot install.
+
+### Plugin connection (Node → Civil 3D plugin)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CIVIL3D_HOST` | `localhost` | Host the Civil 3D plugin's JSON-RPC TCP server binds to. |
+| `CIVIL3D_PORT` | `8080` | TCP port the plugin listens on (see `PluginRuntime.Port`). |
+| `CIVIL3D_CONNECT_TIMEOUT` | `5000` | Milliseconds the server waits for a TCP connection to the plugin before giving up. |
+| `CIVIL3D_COMMAND_TIMEOUT` | `120000` | Milliseconds any single JSON-RPC command may run before the Node side rejects the call. Increase for heavy corridor rebuilds. |
+| `CIVIL3D_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. Logs are written to stderr. |
+
+### HTTP bridge (Copilot / local HTTP clients → Node)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MCP_HTTP_HOST` | `127.0.0.1` | Interface the HTTP bridge binds to. Keep this on loopback unless you know what you're doing. |
+| `MCP_HTTP_PORT` | `3000` | Port the HTTP bridge listens on. |
+| `MCP_HTTP_TOKEN` | *(unset)* | Optional shared secret. When set, every request to the bridge must include `Authorization: Bearer <token>` or `X-MCP-Token: <token>`. Leave unset to keep the loopback-only open mode. |
+| `MCP_HTTP_MAX_BODY_BYTES` | `1048576` | Maximum accepted `POST /execute` body size in bytes. Requests exceeding this receive `413 Payload Too Large`. |
+
+### HTTP bridge endpoints
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/health` | Cheap liveness (bridge status + registered tool count). Does **not** touch the Civil 3D plugin. |
+| `GET` | `/health?deep=1` | Runs the `civil3d_health` tool, which round-trips to the plugin. Use when you need to know Civil 3D is actually reachable. |
+| `GET` | `/tools` | JSON list of every registered MCP tool name. |
+| `POST` | `/execute` | `{ "tool": "<name>", "parameters": { ... } }` — invokes any registered tool or legacy alias. |
+
+### Example: enable the shared-secret token
+
+```powershell
+$env:MCP_HTTP_TOKEN = "change-me-to-a-long-random-string"
+npm run start
+```
+
+Then from the Copilot or any client:
+
+```http
+POST /execute HTTP/1.1
+Host: 127.0.0.1:3000
+Authorization: Bearer change-me-to-a-long-random-string
+Content-Type: application/json
+
+{ "tool": "civil3d_health", "parameters": {} }
+```
+
+---
+
 ## Troubleshooting
 
 **"Cannot connect to Civil 3D plugin"**
 - Civil 3D must be open with a drawing loaded
-- Type `MCPSTATUS` in Civil 3D — confirm the server shows as running on port 8765
-- Check Windows Firewall is not blocking `localhost:8765`
+- Type `C3DMCPSTATUS` in Civil 3D — confirm the server shows as running on port 8080
+- Check Windows Firewall is not blocking `localhost:8080`
+- If you moved the plugin to a non-default port, set `CIVIL3D_PORT` on the Node side to match
 
 **"No active document"**
 - Open a `.dwg` file in Civil 3D before making any tool calls

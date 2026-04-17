@@ -100,15 +100,26 @@ public static class PluginRuntime
         _currentOperation = method;
       }
 
+      PluginLog.Debug("Dispatch", $"-> {method}");
       var result = await CommandDispatcher.DispatchAsync(method, parameters, cancellationToken);
+      PluginLog.Debug("Dispatch", $"<- {method} ok");
       return SerializeResult(id, result);
     }
     catch (JsonRpcDispatchException ex)
     {
+      // Domain-level errors are part of the contract; record at info so they
+      // show up in diagnostics without looking like runtime faults.
+      PluginLog.Info("Dispatch", $"<- {method} dispatch error {ex.Code}: {ex.Message}");
       return SerializeError(id, ex.Code, ex.Message);
+    }
+    catch (OperationCanceledException)
+    {
+      PluginLog.Info("Dispatch", $"<- {method} cancelled");
+      return SerializeError(id, "CIVIL3D.CANCELLED", $"Operation '{method}' was cancelled.");
     }
     catch (Exception ex)
     {
+      PluginLog.Error("Dispatch", $"<- {method} unhandled failure", ex);
       return SerializeError(id, "CIVIL3D.TRANSACTION_FAILED", ex.Message);
     }
     finally

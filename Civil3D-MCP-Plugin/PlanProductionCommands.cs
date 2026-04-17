@@ -431,7 +431,7 @@ public static class PlanProductionCommands
       if (entry.Value is ObjectId oid && oid != ObjectId.Null)
       {
         DBObject? obj = null;
-        try { obj = transaction.GetObject(oid, OpenMode.ForRead); } catch { }
+        try { obj = transaction.GetObject(oid, OpenMode.ForRead); } catch (Exception ex) { PluginLog.Swallow("PlanProduction", "read dictionary entry", ex); }
         if (obj != null && obj.GetType().Name.Contains("SheetSet"))
           yield return obj;
       }
@@ -547,7 +547,10 @@ public static class PlanProductionCommands
               return createdSheetSetObject;
             }
           }
-          catch { }
+          catch (Exception ex)
+          {
+            PluginLog.Swallow("PlanProduction", "createSheetSet via factory method", ex);
+          }
         }
 
         // Try constructor + Add to collection
@@ -563,7 +566,10 @@ public static class PlanProductionCommands
             return dbSheetSet;
           }
         }
-        catch { }
+        catch (Exception ex)
+        {
+          PluginLog.Swallow("PlanProduction", "createSheetSet via constructor", ex);
+        }
       }
     }
 
@@ -658,7 +664,7 @@ public static class PlanProductionCommands
         var obj = transaction.GetObject(alignmentId, OpenMode.ForRead);
         alignmentName = CivilObjectUtils.GetName(obj);
       }
-      catch { }
+      catch (Exception ex) { PluginLog.Swallow("PlanProduction", "resolve alignment name", ex); }
     }
 
     string? profileName = null;
@@ -670,7 +676,7 @@ public static class PlanProductionCommands
         var obj = transaction.GetObject(profileId, OpenMode.ForRead);
         profileName = CivilObjectUtils.GetName(obj);
       }
-      catch { }
+      catch (Exception ex) { PluginLog.Swallow("PlanProduction", "resolve profile name", ex); }
     }
 
     return new Dictionary<string, object?>
@@ -739,7 +745,7 @@ public static class PlanProductionCommands
             ["created"] = true,
           };
         }
-        catch { }
+        catch (Exception ex) { PluginLog.Swallow("PlanProduction", "create plan/profile sheet", ex); }
       }
     }
 
@@ -830,7 +836,7 @@ public static class PlanProductionCommands
         published = PlotViaPlottingServices(plotAssembly, doc, database, transaction, layoutNames, outputPath, plotStyleTable, paperSize);
         if (published > 0) return published;
       }
-      catch { }
+      catch (Exception ex) { PluginLog.Swallow("PlanProduction", "publish via PlottingServices", ex); }
     }
 
     // Fallback: use AutoCAD PUBLISH command via UI bindings
@@ -924,7 +930,7 @@ public static class PlanProductionCommands
 
         count++;
       }
-      catch { }
+      catch (Exception ex) { PluginLog.Swallow("PlanProduction", "plot single layout", ex); }
     }
 
     return count;
@@ -959,7 +965,7 @@ public static class PlanProductionCommands
         sb.AppendLine($"OutputFile={outputPath}");
         i++;
       }
-      catch { }
+      catch (Exception ex) { PluginLog.Swallow("PlanProduction", "build DSD layout entry", ex); }
     }
 
     sb.AppendLine("[Target]");
@@ -1013,7 +1019,7 @@ public static class PlanProductionCommands
     {
       var prop = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
       if (prop == null || !prop.CanWrite || prop.PropertyType != typeof(string)) continue;
-      try { prop.SetValue(target, value); return; } catch { }
+      try { prop.SetValue(target, value); return; } catch (Exception ex) { PluginLog.Swallow("PlanProduction", $"set string property '{name}'", ex); }
     }
   }
 
@@ -1024,7 +1030,7 @@ public static class PlanProductionCommands
     {
       var prop = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
       if (prop == null || !prop.CanWrite || prop.PropertyType != typeof(ObjectId)) continue;
-      try { prop.SetValue(target, objectId); return; } catch { }
+      try { prop.SetValue(target, objectId); return; } catch (Exception ex) { PluginLog.Swallow("PlanProduction", $"set ObjectId property '{name}'", ex); }
     }
   }
 
@@ -1058,8 +1064,9 @@ public static class PlanProductionCommands
         method.Invoke(target, args);
         return;
       }
-      catch
+      catch (Exception ex)
       {
+        PluginLog.Swallow("PlanProduction", "invoke reflected method", ex);
       }
     }
   }

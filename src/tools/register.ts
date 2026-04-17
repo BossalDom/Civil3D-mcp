@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { captureToolHandler } from "./toolHandlerRegistry.js";
 import { registerManifestTools } from "./toolManifest.js";
+import { registerCivil3DOrchestrateTool } from "./civil3d_orchestrate.js";
 
 export async function registerTools(server: McpServer) {
   // Intercept server.tool() to capture every handler in the global registry.
@@ -21,4 +22,9 @@ export async function registerTools(server: McpServer) {
   // Manifest-driven domains: alignment, surface, profile, corridor, section, pipe, assembly, point, grading, parcel, survey, plan_production, project, standards, qc, hydrology, quantity_takeoff, sight_distance, detention, slope_analysis, cost_estimation, geometry, drawing, coordinate_system, job, plugin, docs.
   // Add new migrated domains to toolManifest.ts, not here.
   registerManifestTools(server);
+
+  // Natural-language orchestrator. Registered after manifest tools so its
+  // handler is captured by the interceptor above and becomes reachable from
+  // the stdio transport (not just the HTTP bridge).
+  registerCivil3DOrchestrateTool(server);
 }

@@ -1,6 +1,7 @@
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
+using Autodesk.Civil.ApplicationServices;
 using Autodesk.Civil.DatabaseServices;
 using System.Text.Json.Nodes;
 using App = Autodesk.AutoCAD.ApplicationServices.Application;
@@ -37,12 +38,13 @@ public static class DrawingCommands
       var layer = CivilObjectUtils.GetRequiredObject<LayerTableRecord>(transaction, database.Clayer, OpenMode.ForRead);
       var unsavedChanges = Convert.ToInt32(App.GetSystemVariable("DBMOD") ?? 0) != 0;
       var angularUnits = CivilObjectUtils.AngularUnits(Convert.ToInt16(App.GetSystemVariable("AUNITS") ?? 0));
+      var coordinateSystemCode = ReadCoordinateSystemCode(civilDoc);
 
       return new Dictionary<string, object?>
       {
         ["fileName"] = Path.GetFileName(database.Filename),
         ["filePath"] = database.Filename,
-        ["coordinateSystem"] = null,
+        ["coordinateSystem"] = coordinateSystemCode,
         ["linearUnits"] = CivilObjectUtils.LinearUnits(database),
         ["angularUnits"] = angularUnits,
         ["unsavedChanges"] = unsavedChanges,
@@ -52,9 +54,9 @@ public static class DrawingCommands
           ["alignments"] = civilDoc.GetAlignmentIds().Count,
           ["profiles"] = CountProfiles(civilDoc, transaction),
           ["corridors"] = civilDoc.CorridorCollection.Count,
-          ["pipeNetworks"] = 0,
+          ["pipeNetworks"] = PipeNetworkCommands.CountPipeNetworks(civilDoc),
           ["points"] = civilDoc.CogoPoints.Count,
-          ["parcels"] = 0,
+          ["parcels"] = CountParcels(civilDoc, transaction),
         },
         ["drawingName"] = doc.Name,
         ["projectName"] = null,
@@ -68,14 +70,15 @@ public static class DrawingCommands
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var currentLayer = CivilObjectUtils.GetRequiredObject<LayerTableRecord>(transaction, database.Clayer, OpenMode.ForRead);
+      var coords = ReadCoordinateSystemFields(civilDoc);
 
       return new Dictionary<string, object?>
       {
-        ["coordinateSystem"] = null,
-        ["coordinateZone"] = null,
-        ["datum"] = null,
+        ["coordinateSystem"] = coords.code,
+        ["coordinateZone"] = coords.zone,
+        ["datum"] = coords.datum,
         ["scaleFactor"] = Convert.ToDouble(App.GetSystemVariable("DIMSCALE") ?? 1d),
-        ["elevationReference"] = null,
+        ["elevationReference"] = coords.verticalDatum,
         ["defaultLayer"] = currentLayer.Name,
         ["defaultStyles"] = new Dictionary<string, object?>
         {
@@ -83,7 +86,7 @@ public static class DrawingCommands
           ["alignment"] = LookupUtils.GetFirstStyleName(civilDoc.Styles.AlignmentStyles, transaction),
           ["profile"] = LookupUtils.GetFirstStyleName(civilDoc.Styles.ProfileStyles, transaction),
           ["corridor"] = null,
-          ["pipeNetwork"] = null,
+          ["pipeNetwork"] = PipeNetworkCommands.GetFirstPipeNetworkStyleName(civilDoc, transaction),
         },
       };
     });
@@ -239,7 +242,7 @@ public static class DrawingCommands
     });
   }
 
-  private static int CountProfiles(Autodesk.Civil.ApplicationServices.CivilDocument civilDoc, Transaction transaction)
+  private static int CountProfiles(CivilDocument civilDoc, Transaction transaction)
   {
     var count = 0;
     foreach (ObjectId objectId in civilDoc.GetAlignmentIds())
@@ -249,5 +252,78 @@ public static class DrawingCommands
     }
 
     return count;
+  }
+
+  // Counts every parcel across every Site. Uses reflection-friendly helpers so
+  // it tolerates parcel collection shape differences across Civil 3D versions.
+  private static int CountParcels(CivilDocument civilDoc, Transaction transaction)
+  {
+    var count = 0;
+
+    foreach (ObjectId siteId in civilDoc.GetSiteIds())
+    {
+      var site = transaction.GetObject(siteId, OpenMode.ForRead);
+      if (site == null)
+      {
+        continue;
+      }
+
+      var parcelContainer =
+        CivilObjectUtils.InvokeMethod(site, "GetParcelIds")
+        ?? CivilObjectUtils.GetPropertyValue<object>(site, "ParcelIds")
+        ?? CivilObjectUtils.GetPropertyValue<object>(site, "Parcels")
+        ?? CivilObjectUtils.GetPropertyValue<object>(site, "ParcelCollection");
+
+      foreach (var parcelId in CivilObjectUtils.ToObjectIds(parcelContainer))
+      {
+        if (parcelId != ObjectId.Null)
+        {
+          count++;
+        }
+      }
+    }
+
+    return count;
+  }
+
+  // Single-field coordinate system code (for getDrawingInfo).
+  private static string? ReadCoordinateSystemCode(CivilDocument civilDoc)
+  {
+    return ReadCoordinateSystemFields(civilDoc).code;
+  }
+
+  // Extracts coordinate system metadata from Settings.DrawingSettings.UnitZoneSettings
+  // using the same reflection pattern as CoordinateSystemCommands. Returns nulls
+  // for any field the drawing hasn't set — callers should treat missing values
+  // as "unassigned" rather than errors.
+  private static (string? code, string? zone, string? datum, string? verticalDatum) ReadCoordinateSystemFields(CivilDocument civilDoc)
+  {
+    var settings = CivilObjectUtils.GetPropertyValue<object>(civilDoc, "Settings");
+    var drawingSettings = CivilObjectUtils.GetPropertyValue<object>(settings, "DrawingSettings");
+    var unitZone = CivilObjectUtils.GetPropertyValue<object>(drawingSettings, "UnitZoneSettings");
+
+    if (unitZone == null)
+    {
+      return (null, null, null, null);
+    }
+
+    var code =
+      CivilObjectUtils.GetStringProperty(unitZone, "CoordinateSystemCode")
+      ?? CivilObjectUtils.GetStringProperty(unitZone, "CsCode")
+      ?? CivilObjectUtils.GetStringProperty(unitZone, "ZoneCode");
+
+    var zone =
+      CivilObjectUtils.GetStringProperty(unitZone, "Zone")
+      ?? CivilObjectUtils.GetStringProperty(unitZone, "ZoneName");
+
+    var datum =
+      CivilObjectUtils.GetStringProperty(unitZone, "Datum")
+      ?? CivilObjectUtils.GetStringProperty(unitZone, "DatumName");
+
+    var verticalDatum =
+      CivilObjectUtils.GetStringProperty(unitZone, "VerticalDatum")
+      ?? CivilObjectUtils.GetStringProperty(unitZone, "VerticalDatumName");
+
+    return (code, zone, datum, verticalDatum);
   }
 }

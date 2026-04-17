@@ -77,16 +77,88 @@ public static class CorridorCommands
   public static Task<object?> RebuildCorridorAsync(JsonObject? parameters)
   {
     var name = PluginRuntime.GetRequiredString(parameters, "name");
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+
+    // Create the job up front so the caller gets a jobId immediately — they
+    // poll civil3d_job(status, jobId) until the background rebuild finishes.
+    var job = JobRegistry.Create($"Rebuilding corridor {name}");
+    job.CancellationSource = new CancellationTokenSource();
+    var cancellationToken = job.CancellationSource.Token;
+
+    // Dispatch the rebuild to the Civil 3D command thread via
+    // CivilExecution.WriteAsync, but do NOT await it here so the JSON-RPC
+    // handler returns immediately and the HTTP/TCP command timeout does not
+    // apply to long-running rebuilds.
+    _ = Task.Run(async () =>
     {
-      var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, name, OpenMode.ForWrite);
-      var job = JobRegistry.Create($"Rebuilding corridor {name}");
-      corridor.Rebuild();
-      JobRegistry.Complete(job.JobId, new Dictionary<string, object?> { ["corridorName"] = name, ["state"] = GetCorridorState(corridor) });
-      return new Dictionary<string, object?>
+      try
       {
-        ["jobId"] = job.JobId,
-      };
+        if (cancellationToken.IsCancellationRequested)
+        {
+          // Caller cancelled before the worker even started running.
+          return;
+        }
+
+        JobRegistry.Progress(job.JobId, 10, $"Scheduling rebuild for corridor {name}", null);
+
+        var result = await CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+        {
+          cancellationToken.ThrowIfCancellationRequested();
+
+          var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, name, OpenMode.ForWrite);
+
+          // Rebuild is synchronous once inside the document lock; Civil 3D
+          // does not expose an API-level cancellation handle. We honour the
+          // token by aborting before and after the call.
+          JobRegistry.Progress(job.JobId, 40, $"Rebuilding corridor {name}", null);
+          corridor.Rebuild();
+          cancellationToken.ThrowIfCancellationRequested();
+
+          return new Dictionary<string, object?>
+          {
+            ["corridorName"] = name,
+            ["state"] = GetCorridorState(corridor),
+          };
+        });
+
+        JobRegistry.Complete(job.JobId, result);
+        PluginLog.Info("Corridor", $"Rebuild completed for corridor '{name}' (job {job.JobId}).");
+      }
+      catch (OperationCanceledException)
+      {
+        // Cancel() on JobRegistry already set State=cancelled; nothing more to do.
+        PluginLog.Info("Corridor", $"Rebuild cancelled for corridor '{name}' (job {job.JobId}).");
+      }
+      catch (Exception ex)
+      {
+        PluginLog.Error("Corridor", $"Rebuild failed for corridor '{name}' (job {job.JobId}).", ex);
+        try
+        {
+          JobRegistry.Fail(job.JobId, ex.Message);
+        }
+        catch (Exception failEx)
+        {
+          PluginLog.Error("Corridor", $"Unable to mark job {job.JobId} as failed.", failEx);
+        }
+      }
+      finally
+      {
+        // Release the cancellation source once the worker has exited.
+        try
+        {
+          job.CancellationSource?.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+          // Already disposed (e.g. by Cancel/Dispose race); safe to ignore.
+        }
+      }
+    }, CancellationToken.None);
+
+    return Task.FromResult<object?>(new Dictionary<string, object?>
+    {
+      ["jobId"] = job.JobId,
+      ["state"] = "running",
+      ["message"] = $"Corridor '{name}' rebuild queued. Poll civil3d_job with action='status' to track progress.",
     });
   }
 

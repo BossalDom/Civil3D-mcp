@@ -128,58 +128,11 @@ public static class DetentionCommands
     {
       throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "topElevation must be greater than bottomElevation.");
     }
-
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var surface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, surfaceName, OpenMode.ForRead);
-      var rows = new List<Dictionary<string, object?>>();
-      double cumulativeVolume = 0.0;
-      double? prevArea = null;
-
-      for (double elev = bottomElevation; elev <= topElevation + 0.001; elev += elevIncrement)
-      {
-        var clampedElev = Math.Min(elev, topElevation);
-
-        // Sample surface area at this elevation using contour area approximation
-        double surfaceArea = EstimateSurfaceAreaAtElevation(surface, clampedElev);
-
-        if (prevArea.HasValue)
-        {
-          // Prismatoid volume between previous and current elevation
-          double dh = Math.Min(elevIncrement, topElevation - (elev - elevIncrement));
-          cumulativeVolume += (prevArea.Value + surfaceArea) / 2.0 * dh;
-        }
-
-        prevArea = surfaceArea;
-
-        double discharge = CalculateOutletDischarge(outletType!, cd, outletDiameter, weirLength, clampedElev, bottomElevation);
-
-        rows.Add(new Dictionary<string, object?>
-        {
-          ["elevation"] = Math.Round(clampedElev, 3),
-          ["stage"] = Math.Round(clampedElev - bottomElevation, 3),
-          ["surfaceAreaSqFt"] = Math.Round(surfaceArea, 0),
-          ["cumulativeVolumeCf"] = Math.Round(cumulativeVolume, 0),
-          ["cumulativeVolumeAcFt"] = Math.Round(cumulativeVolume / 43560.0, 4),
-          ["outletDischargeCfs"] = Math.Round(discharge, 3),
-        });
-
-        if (clampedElev >= topElevation) break;
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["surfaceName"] = surfaceName,
-        ["bottomElevation"] = bottomElevation,
-        ["topElevation"] = topElevation,
-        ["totalStage"] = Math.Round(topElevation - bottomElevation, 3),
-        ["totalStorageCf"] = rows.Count > 0 ? rows[^1]["cumulativeVolumeCf"] : 0,
-        ["totalStorageAcFt"] = rows.Count > 0 ? rows[^1]["cumulativeVolumeAcFt"] : 0,
-        ["outletType"] = outletType,
-        ["dischargeCoefficient"] = cd,
-        ["stageStorageTable"] = rows,
-      };
-    });
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      $"Stage-storage for surface '{surfaceName}' is unavailable because the Civil 3D 2026 .NET surface API does not expose " +
+      "the inundated plan area at an arbitrary elevation. Provide surveyed stage-area data or an explicit basin boundary workflow; " +
+      "the server will not synthesize storage from a bounding box.");
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
@@ -207,59 +160,4 @@ public static class DetentionCommands
     return depth / 6.0 * (bottomWidth * bottomLength + topWidth * topLength + 4 * aMid);
   }
 
-  private static double EstimateSurfaceAreaAtElevation(DBObject surface, double elevation)
-  {
-    // Try Civil 3D surface API: GetBoundingBox or sample statistics for area at elevation
-    // Fallback: use reflection to call surface methods
-    try
-    {
-      var method = surface.GetType().GetMethod("GetBoundingBox",
-        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-      if (method != null)
-      {
-        var bbox = method.Invoke(surface, null);
-        if (bbox != null)
-        {
-          // Get min elevation from bbox to check if this elevation is within range
-          var minElev = CivilObjectUtils.GetPropertyValue<double?>(bbox, "MinElevation")
-                     ?? CivilObjectUtils.GetPropertyValue<double?>(bbox, "MinPoint.Z") ?? 0;
-          var maxElev = CivilObjectUtils.GetPropertyValue<double?>(bbox, "MaxElevation")
-                     ?? CivilObjectUtils.GetPropertyValue<double?>(bbox, "MaxPoint.Z") ?? 0;
-
-          if (elevation < minElev || elevation > maxElev) return 0;
-
-          // Approximate area as fraction of total surface area scaled by elevation position
-          var totalArea = CivilObjectUtils.GetPropertyValue<double?>(surface, "Area2D")
-                       ?? CivilObjectUtils.GetPropertyValue<double?>(surface, "Area") ?? 1000.0;
-          double elevRange = maxElev - minElev;
-          if (elevRange <= 0) return totalArea;
-          // Linear interpolation — pond gets larger toward max elevation
-          double fraction = (elevation - minElev) / elevRange;
-          return totalArea * fraction * fraction; // bowl shape approximation
-        }
-      }
-    }
-    catch { /* fall through to default */ }
-
-    // Default: return a linearly growing area (rough approximation)
-    return Math.Max(0, (elevation - (elevation - 1)) * 5000);
-  }
-
-  private static double CalculateOutletDischarge(string outletType, double cd, double? diameterInches, double? weirLength, double elevation, double bottomElevation)
-  {
-    double head = elevation - bottomElevation;
-    if (head <= 0) return 0;
-
-    return outletType.ToLowerInvariant() switch
-    {
-      "weir" => weirLength.HasValue ? cd * (weirLength.Value) * Math.Pow(head, 1.5) : 0,
-      "riser" when diameterInches.HasValue =>
-        // Riser acts as weir until submerged, then as orifice
-        cd * Math.PI * (diameterInches.Value / 12.0) * Math.Sqrt(2.0 * 32.2 * head),
-      _ when diameterInches.HasValue =>
-        // Orifice: Q = Cd * A * sqrt(2gh)
-        cd * Math.PI * Math.Pow(diameterInches.Value / 24.0, 2) * Math.Sqrt(2.0 * 32.2 * head),
-      _ => 0,
-    };
-  }
 }

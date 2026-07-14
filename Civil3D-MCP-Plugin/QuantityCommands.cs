@@ -1,8 +1,8 @@
 using System.Collections;
-using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.Civil.ApplicationServices;
 using Autodesk.Civil.DatabaseServices;
 using AcDbObject = Autodesk.AutoCAD.DatabaseServices.DBObject;
 using CivilSurface = Autodesk.Civil.DatabaseServices.Surface;
@@ -11,7 +11,7 @@ namespace Civil3DMcpPlugin;
 
 /// <summary>
 /// Quantity takeoff commands — aggregate Civil 3D object data for cost estimation.
-/// Uses reflection for API compatibility across Civil 3D versions.
+/// Uses typed Civil 3D APIs wherever the 2026 API exposes the required data.
 /// </summary>
 public static class QuantityCommands
 {
@@ -21,91 +21,10 @@ public static class QuantityCommands
 
   public static Task<object?> QtyCorridorVolumesAsync(JsonObject? parameters)
   {
-    var name = PluginRuntime.GetRequiredString(parameters, "name");
-    var materialsNode = PluginRuntime.GetParameter(parameters, "materials") as JsonArray;
-    var startStation = PluginRuntime.GetOptionalDouble(parameters, "startStation");
-    var endStation = PluginRuntime.GetOptionalDouble(parameters, "endStation");
-
-    var requestedMaterials = materialsNode?
-      .Select(n => n?.GetValue<string>())
-      .Where(s => !string.IsNullOrWhiteSpace(s))
-      .Cast<string>()
-      .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, name, OpenMode.ForRead);
-      var materialResults = new List<Dictionary<string, object?>>();
-
-      // Access corridor material volumes via reflection
-      // Civil 3D exposes material volumes through the corridor's Baselines/sections
-      var baselines = CivilObjectUtils.GetPropertyValue<object>(corridor, "Baselines");
-      if (baselines is IEnumerable baselineEnumerable)
-      {
-        foreach (var baseline in baselineEnumerable)
-        {
-          if (baseline == null) continue;
-
-          // Try to get material volumes via GetMaterialQuantities or similar
-          var materialQuantities = CivilObjectUtils.InvokeMethod(baseline, "GetMaterialQuantities")
-            ?? CivilObjectUtils.InvokeMethod(baseline, "GetMaterials")
-            ?? CivilObjectUtils.GetPropertyValue<object>(baseline, "Materials");
-
-          if (materialQuantities is IEnumerable mq)
-          {
-            foreach (var material in mq)
-            {
-              if (material == null) continue;
-              var matName = CivilObjectUtils.GetName(material) ?? CivilObjectUtils.GetStringProperty(material, "MaterialName") ?? "Unknown";
-              if (requestedMaterials != null && !requestedMaterials.Contains(matName)) continue;
-
-              var cutVol = CivilObjectUtils.GetPropertyValue<double?>(material, "CutQuantity")
-                ?? CivilObjectUtils.GetPropertyValue<double?>(material, "CutVolume")
-                ?? CivilObjectUtils.GetDoubleProperty(material, "Cut") ?? 0;
-              var fillVol = CivilObjectUtils.GetPropertyValue<double?>(material, "FillQuantity")
-                ?? CivilObjectUtils.GetPropertyValue<double?>(material, "FillVolume")
-                ?? CivilObjectUtils.GetDoubleProperty(material, "Fill") ?? 0;
-
-              materialResults.Add(new Dictionary<string, object?>
-              {
-                ["name"] = matName,
-                ["cutVolume"] = cutVol,
-                ["fillVolume"] = fillVol,
-                ["netVolume"] = cutVol - fillVol,
-                ["units"] = CivilObjectUtils.VolumeUnits(database),
-              });
-            }
-          }
-        }
-      }
-
-      // If no material quantities found via baseline iteration, try corridor-level volume methods
-      if (materialResults.Count == 0)
-      {
-        var cutVol = CivilObjectUtils.GetDoubleProperty(corridor, "CutVolume") ?? 0;
-        var fillVol = CivilObjectUtils.GetDoubleProperty(corridor, "FillVolume") ?? 0;
-        if (cutVol != 0 || fillVol != 0)
-        {
-          materialResults.Add(new Dictionary<string, object?>
-          {
-            ["name"] = "Earthwork",
-            ["cutVolume"] = cutVol,
-            ["fillVolume"] = fillVol,
-            ["netVolume"] = cutVol - fillVol,
-            ["units"] = CivilObjectUtils.VolumeUnits(database),
-          });
-        }
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["corridorName"] = corridor.Name,
-        ["startStation"] = startStation,
-        ["endStation"] = endStation,
-        ["materials"] = materialResults,
-        ["units"] = CivilObjectUtils.VolumeUnits(database),
-      };
-    });
+    _ = PluginRuntime.GetRequiredString(parameters, "name");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Corridor material quantities are exposed through SampleLineGroup QTO material lists, not Corridor baseline properties. A sample-line group and material-list identifier are required; no zero quantities were returned.");
   }
 
   // -------------------------------------------------------------------------
@@ -123,48 +42,22 @@ public static class QuantityCommands
       var baseSurface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, baseSurfaceName, OpenMode.ForRead);
       var compSurface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, comparisonSurfaceName, OpenMode.ForRead);
 
-      // Use TinVolumeSurface if available, otherwise compute via InvokeMethod
-      // The standard Civil 3D approach: create a volume surface or use ComputeVolumes
-      var cutVolume = 0.0;
-      var fillVolume = 0.0;
-      var net2dArea = 0.0;
-
-      // Try to invoke volume calculation via reflection
-      var volumeResult = CivilObjectUtils.InvokeMethod(baseSurface, "ComputeVolumes", compSurface.ObjectId)
-        ?? CivilObjectUtils.InvokeMethod(baseSurface, "GetVolumes", compSurface.ObjectId);
-
-      if (volumeResult != null)
-      {
-        cutVolume = CivilObjectUtils.GetPropertyValue<double?>(volumeResult, "CutVolume")
-          ?? CivilObjectUtils.GetDoubleProperty(volumeResult, "Cut") ?? 0;
-        fillVolume = CivilObjectUtils.GetPropertyValue<double?>(volumeResult, "FillVolume")
-          ?? CivilObjectUtils.GetDoubleProperty(volumeResult, "Fill") ?? 0;
-        net2dArea = CivilObjectUtils.GetPropertyValue<double?>(volumeResult, "Net2DArea")
-          ?? CivilObjectUtils.GetDoubleProperty(volumeResult, "Area2D") ?? 0;
-      }
-      else
-      {
-        // Fallback: read volume properties from each surface's general properties
-        var baseGp = CivilObjectUtils.InvokeMethod(baseSurface, "GetGeneralProperties");
-        var compGp = CivilObjectUtils.InvokeMethod(compSurface, "GetGeneralProperties");
-        var baseMinElev = CivilObjectUtils.GetPropertyValue<double?>(baseGp, "MinimumElevation") ?? 0;
-        var compMinElev = CivilObjectUtils.GetPropertyValue<double?>(compGp, "MinimumElevation") ?? 0;
-        var baseArea = CivilObjectUtils.GetPropertyValue<double?>(baseGp, "Area2D") ?? 0;
-        net2dArea = baseArea;
-        // Provide zero volumes as a fallback — actual volume requires a TinVolumeSurface
-      }
+      var temporaryName = $"MCP_TMP_VOLUME_{Guid.NewGuid():N}";
+      var volumeSurfaceId = TinVolumeSurface.Create(temporaryName, baseSurface.ObjectId, compSurface.ObjectId);
+      var volumeSurface = CivilObjectUtils.GetRequiredObject<TinVolumeSurface>(transaction, volumeSurfaceId, OpenMode.ForRead);
+      var volumeProperties = volumeSurface.GetVolumeProperties();
 
       return new Dictionary<string, object?>
       {
         ["baseSurface"] = baseSurfaceName,
         ["comparisonSurface"] = comparisonSurfaceName,
         ["corridorName"] = corridorName,
-        ["cutVolume"] = cutVolume,
-        ["fillVolume"] = fillVolume,
-        ["netVolume"] = fillVolume - cutVolume,
-        ["net2dArea"] = net2dArea,
+        ["cutVolume"] = volumeProperties.UnadjustedCutVolume,
+        ["fillVolume"] = volumeProperties.UnadjustedFillVolume,
+        ["netVolume"] = volumeProperties.UnadjustedNetVolume,
+        ["net2dArea"] = null,
         ["units"] = CivilObjectUtils.VolumeUnits(database),
-        ["note"] = volumeResult == null ? "Volume calculation requires a TinVolumeSurface — values may be zero. Use computeSurfaceVolume for full calculation." : null,
+        ["note"] = "Volumes are exact Civil 3D TinVolumeSurface results. The managed volume-properties API does not expose a net 2D area.",
       };
     });
   }
@@ -181,7 +74,7 @@ public static class QuantityCommands
 
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      var networkObj = FindPipeNetworkByNameReflection(civilDoc, transaction, name)
+      var networkObj = FindPipeNetworkByName(civilDoc, transaction, name)
         ?? throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Pipe network '{name}' was not found.");
 
       var totalLength = 0.0;
@@ -190,10 +83,10 @@ public static class QuantityCommands
 
       foreach (var pipeId in GetChildObjectIds(networkObj, "GetPipeIds", "PipeIds", "Pipes", "PipeCollection"))
       {
-        var pipe = transaction.GetObject(pipeId, OpenMode.ForRead);
-        var length = GetAnyDouble(pipe, "Length3D", "Length2D", "Length") ?? 0;
-        var diameter = GetAnyDouble(pipe, "InnerDiameterOrWidth", "InnerDiameter", "Diameter") ?? 0;
-        var material = GetAnyString(pipe, "Material", "PartDescription", "PartFamilyName") ?? "Unknown";
+        var pipe = CivilObjectUtils.GetRequiredObject<Pipe>(transaction, pipeId, OpenMode.ForRead);
+        var length = pipe.Length3D;
+        var diameter = pipe.InnerDiameterOrWidth;
+        var material = pipe.Material;
 
         totalLength += length;
         pipeCount++;
@@ -246,7 +139,7 @@ public static class QuantityCommands
 
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      var networkObj = FindPressureNetworkByNameReflection(civilDoc, transaction, name)
+      var networkObj = FindPressureNetworkByName(civilDoc, transaction, name)
         ?? throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Pressure network '{name}' was not found.");
 
       var totalLength = 0.0;
@@ -256,8 +149,8 @@ public static class QuantityCommands
       foreach (var pipeId in GetChildObjectIds(networkObj, "GetPipeIds", "PipeIds", "Pipes"))
       {
         var pipe = transaction.GetObject(pipeId, OpenMode.ForRead);
-        var length = GetAnyDouble(pipe, "Length3D", "Length2D", "Length") ?? 0;
-        var diameter = GetAnyDouble(pipe, "InnerDiameter", "OuterDiameter", "Diameter", "InnerDiameterOrWidth") ?? 0;
+        var length = GetRequiredEngineeringDouble(pipe, $"pressure pipe '{CivilObjectUtils.GetName(pipe)}' length", "Length3D", "Length2D", "Length");
+        var diameter = GetRequiredEngineeringDouble(pipe, $"pressure pipe '{CivilObjectUtils.GetName(pipe)}' diameter", "InnerDiameter", "OuterDiameter", "Diameter", "InnerDiameterOrWidth");
         var material = GetAnyString(pipe, "Material", "PipeFamily", "PartFamilyName", "PartDescription") ?? "Unknown";
 
         totalLength += length;
@@ -317,34 +210,25 @@ public static class QuantityCommands
       var parcelResults = new List<Dictionary<string, object?>>();
       var totalArea = 0.0;
 
-      var sitesProperty = civilDoc.GetType().GetProperty("Sites", BindingFlags.Public | BindingFlags.Instance);
-      var sites = sitesProperty?.GetValue(civilDoc);
-
-      foreach (var siteId in CivilObjectUtils.ToObjectIds(sites))
+      foreach (ObjectId siteId in civilDoc.GetSiteIds())
       {
-        var siteObj = transaction.GetObject(siteId, OpenMode.ForRead);
-        var currentSiteName = CivilObjectUtils.GetName(siteObj) ?? string.Empty;
+        var site = CivilObjectUtils.GetRequiredObject<Site>(transaction, siteId, OpenMode.ForRead);
+        var currentSiteName = site.Name;
 
         if (!string.IsNullOrWhiteSpace(siteName) &&
             !currentSiteName.Equals(siteName, StringComparison.OrdinalIgnoreCase))
           continue;
 
-        var parcelIds = CivilObjectUtils.InvokeMethod(siteObj, "GetParcelIds")
-          ?? CivilObjectUtils.GetPropertyValue<object>(siteObj, "Parcels")
-          ?? CivilObjectUtils.GetPropertyValue<object>(siteObj, "ParcelCollection");
-
-        foreach (var parcelId in CivilObjectUtils.ToObjectIds(parcelIds))
+        foreach (ObjectId parcelId in site.GetParcelIds())
         {
           if (parcelId == ObjectId.Null) continue;
-          var parcel = transaction.GetObject(parcelId, OpenMode.ForRead);
-          var parcelName = CivilObjectUtils.GetName(parcel) ?? parcelId.Handle.ToString();
+          var parcel = CivilObjectUtils.GetRequiredObject<Parcel>(transaction, parcelId, OpenMode.ForRead);
+          var parcelName = parcel.Name;
 
           if (requestedParcelNames != null && !requestedParcelNames.Contains(parcelName)) continue;
 
-          var area = CivilObjectUtils.GetDoubleProperty(parcel, "Area")
-            ?? CivilObjectUtils.GetDoubleProperty(parcel, "SurfaceArea")
-            ?? CivilObjectUtils.GetDoubleProperty(parcel, "Area2d") ?? 0;
-          var perimeter = CivilObjectUtils.GetDoubleProperty(parcel, "Perimeter") ?? 0;
+          var area = parcel.Area;
+          var perimeter = CivilObjectUtils.GetDoubleProperty(parcel, "Perimeter");
 
           totalArea += area;
           parcelResults.Add(new Dictionary<string, object?>
@@ -437,30 +321,15 @@ public static class QuantityCommands
       var groupResults = new List<Dictionary<string, object?>>();
       var totalPoints = 0;
 
-      var pointGroupsProperty = civilDoc.GetType().GetProperty("PointGroups", BindingFlags.Public | BindingFlags.Instance);
-      var pointGroups = pointGroupsProperty?.GetValue(civilDoc);
-
-      foreach (var groupId in CivilObjectUtils.ToObjectIds(pointGroups))
+      foreach (ObjectId groupId in civilDoc.PointGroups)
       {
         if (groupId == ObjectId.Null) continue;
-        var group = transaction.GetObject(groupId, OpenMode.ForRead);
-        var groupName = CivilObjectUtils.GetName(group) ?? groupId.Handle.ToString();
+        var group = CivilObjectUtils.GetRequiredObject<PointGroup>(transaction, groupId, OpenMode.ForRead);
+        var groupName = group.Name;
 
         if (requestedGroupNames != null && !requestedGroupNames.Contains(groupName)) continue;
 
-        // Get point IDs / numbers from the group
-        var pointNumbers = CivilObjectUtils.InvokeMethod(group, "GetPointNumbers") as IEnumerable<uint>;
-        var pointIds = CivilObjectUtils.InvokeMethod(group, "GetPointIds");
-        int count;
-
-        if (pointNumbers != null)
-        {
-          count = pointNumbers.Count();
-        }
-        else
-        {
-          count = CivilObjectUtils.ToObjectIds(pointIds).Count();
-        }
+        var count = group.GetPointNumbers().Length;
 
         totalPoints += count;
         groupResults.Add(new Dictionary<string, object?>
@@ -485,6 +354,7 @@ public static class QuantityCommands
   public static Task<object?> QtyExportToCsvAsync(JsonObject? parameters)
   {
     var outputPath = PluginRuntime.GetRequiredString(parameters, "outputPath");
+    var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
     var includeAlignments = PluginRuntime.GetOptionalBool(parameters, "includeAlignments") ?? true;
     var includeSurfaces = PluginRuntime.GetOptionalBool(parameters, "includeSurfaces") ?? false;
     var includePipeNetworks = PluginRuntime.GetOptionalBool(parameters, "includePipeNetworks") ?? false;
@@ -520,17 +390,13 @@ public static class QuantityCommands
       if (includeSurfaces)
       {
         sectionsIncluded.Add("surfaces");
-        sb.AppendLine("Section,Name,Type,MinElevation,MaxElevation,Area2D,NumberOfPoints,Units");
+        sb.AppendLine("Section,Name,Type,MinElevation,MaxElevation,NumberOfPoints,Units");
         foreach (ObjectId surfId in civilDoc.GetSurfaceIds())
         {
           var surface = CivilObjectUtils.GetRequiredObject<CivilSurface>(transaction, surfId, OpenMode.ForRead);
           if (filterNames != null && !filterNames.Contains(surface.Name)) continue;
-          var gp = CivilObjectUtils.InvokeMethod(surface, "GetGeneralProperties");
-          var minElev = CivilObjectUtils.GetPropertyValue<double?>(gp, "MinimumElevation") ?? 0;
-          var maxElev = CivilObjectUtils.GetPropertyValue<double?>(gp, "MaximumElevation") ?? 0;
-          var area2d = CivilObjectUtils.GetPropertyValue<double?>(gp, "Area2D") ?? 0;
-          var nPts = CivilObjectUtils.GetPropertyValue<int?>(gp, "NumberOfPoints") ?? 0;
-          sb.AppendLine($"Surface,{EscapeCsv(surface.Name)},{surface.GetType().Name},{minElev:F3},{maxElev:F3},{area2d:F3},{nPts},{CivilObjectUtils.LinearUnits(database)}");
+          var gp = surface.GetGeneralProperties();
+          sb.AppendLine($"Surface,{EscapeCsv(surface.Name)},{surface.GetType().Name},{gp.MinimumElevation:F3},{gp.MaximumElevation:F3},{gp.NumberOfPoints},{CivilObjectUtils.LinearUnits(database)}");
           rowsWritten++;
         }
         sb.AppendLine();
@@ -548,9 +414,9 @@ public static class QuantityCommands
           {
             var pipe = transaction.GetObject(pipeId, OpenMode.ForRead);
             var pipeName = CivilObjectUtils.GetName(pipe) ?? pipeId.Handle.ToString();
-            var length = GetAnyDouble(pipe, "Length3D", "Length2D", "Length") ?? 0;
-            var diameter = GetAnyDouble(pipe, "InnerDiameterOrWidth", "InnerDiameter", "Diameter") ?? 0;
-            var slope = GetAnyDouble(pipe, "Slope", "FlowSlope") ?? 0;
+            var length = GetRequiredEngineeringDouble(pipe, $"pipe '{pipeName}' length", "Length3D", "Length2D", "Length");
+            var diameter = GetRequiredEngineeringDouble(pipe, $"pipe '{pipeName}' diameter", "InnerDiameterOrWidth", "InnerDiameter", "Diameter");
+            var slope = GetRequiredEngineeringDouble(pipe, $"pipe '{pipeName}' slope", "Slope", "FlowSlope");
             var material = GetAnyString(pipe, "Material", "PartDescription", "PartFamilyName") ?? string.Empty;
             sb.AppendLine($"PipeNetwork,{EscapeCsv(networkName)},{EscapeCsv(pipeName)},{length:F3},{diameter:F3},{slope:F6},{EscapeCsv(material)},{CivilObjectUtils.LinearUnits(database)}");
             rowsWritten++;
@@ -563,24 +429,20 @@ public static class QuantityCommands
       {
         sectionsIncluded.Add("parcelAreas");
         sb.AppendLine("Section,SiteName,ParcelName,Area,Perimeter,Units");
-        var sitesProperty = civilDoc.GetType().GetProperty("Sites", BindingFlags.Public | BindingFlags.Instance);
-        var sites = sitesProperty?.GetValue(civilDoc);
-        foreach (var siteId in CivilObjectUtils.ToObjectIds(sites))
+        foreach (ObjectId siteId in civilDoc.GetSiteIds())
         {
-          var siteObj = transaction.GetObject(siteId, OpenMode.ForRead);
-          var currentSiteName = CivilObjectUtils.GetName(siteObj) ?? string.Empty;
-          var parcelIds = CivilObjectUtils.InvokeMethod(siteObj, "GetParcelIds")
-            ?? CivilObjectUtils.GetPropertyValue<object>(siteObj, "Parcels")
-            ?? CivilObjectUtils.GetPropertyValue<object>(siteObj, "ParcelCollection");
-          foreach (var parcelId in CivilObjectUtils.ToObjectIds(parcelIds))
+          var site = CivilObjectUtils.GetRequiredObject<Site>(transaction, siteId, OpenMode.ForRead);
+          var currentSiteName = site.Name;
+          foreach (ObjectId parcelId in site.GetParcelIds())
           {
             if (parcelId == ObjectId.Null) continue;
-            var parcel = transaction.GetObject(parcelId, OpenMode.ForRead);
-            var parcelName = CivilObjectUtils.GetName(parcel) ?? parcelId.Handle.ToString();
+            var parcel = CivilObjectUtils.GetRequiredObject<Parcel>(transaction, parcelId, OpenMode.ForRead);
+            var parcelName = parcel.Name;
             if (filterNames != null && !filterNames.Contains(parcelName)) continue;
-            var area = CivilObjectUtils.GetDoubleProperty(parcel, "Area") ?? 0;
-            var perimeter = CivilObjectUtils.GetDoubleProperty(parcel, "Perimeter") ?? 0;
-            sb.AppendLine($"Parcel,{EscapeCsv(currentSiteName)},{EscapeCsv(parcelName)},{area:F3},{perimeter:F3},{CivilObjectUtils.LinearUnits(database)}");
+            var area = parcel.Area;
+            var perimeter = CivilObjectUtils.GetDoubleProperty(parcel, "Perimeter");
+            var perimeterText = perimeter.HasValue ? perimeter.Value.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+            sb.AppendLine($"Parcel,{EscapeCsv(currentSiteName)},{EscapeCsv(parcelName)},{area:F3},{perimeterText},{CivilObjectUtils.LinearUnits(database)}");
             rowsWritten++;
           }
         }
@@ -591,27 +453,25 @@ public static class QuantityCommands
       {
         sectionsIncluded.Add("pointGroups");
         sb.AppendLine("Section,GroupName,PointCount");
-        var pointGroupsProperty = civilDoc.GetType().GetProperty("PointGroups", BindingFlags.Public | BindingFlags.Instance);
-        var pointGroups = pointGroupsProperty?.GetValue(civilDoc);
-        foreach (var groupId in CivilObjectUtils.ToObjectIds(pointGroups))
+        foreach (ObjectId groupId in civilDoc.PointGroups)
         {
           if (groupId == ObjectId.Null) continue;
-          var group = transaction.GetObject(groupId, OpenMode.ForRead);
-          var groupName = CivilObjectUtils.GetName(group) ?? groupId.Handle.ToString();
+          var group = CivilObjectUtils.GetRequiredObject<PointGroup>(transaction, groupId, OpenMode.ForRead);
+          var groupName = group.Name;
           if (filterNames != null && !filterNames.Contains(groupName)) continue;
-          var pointNumbers = CivilObjectUtils.InvokeMethod(group, "GetPointNumbers") as IEnumerable<uint>;
-          var count = pointNumbers?.Count() ?? CivilObjectUtils.ToObjectIds(CivilObjectUtils.InvokeMethod(group, "GetPointIds")).Count();
+          var count = group.GetPointNumbers().Length;
           sb.AppendLine($"PointGroup,{EscapeCsv(groupName)},{count}");
           rowsWritten++;
         }
         sb.AppendLine();
       }
 
-      System.IO.File.WriteAllText(outputPath, sb.ToString());
+      var canonicalOutputPath = FileBoundary.WriteAllTextAtomic(
+        outputPath, sb.ToString(), Encoding.UTF8, overwrite, ".csv");
 
       return new Dictionary<string, object?>
       {
-        ["outputPath"] = outputPath,
+        ["outputPath"] = canonicalOutputPath,
         ["rowsWritten"] = rowsWritten,
         ["sectionsIncluded"] = sectionsIncluded,
       };
@@ -624,74 +484,10 @@ public static class QuantityCommands
 
   public static Task<object?> QtyMaterialListGetAsync(JsonObject? parameters)
   {
-    var corridorName = PluginRuntime.GetRequiredString(parameters, "corridorName");
-    var includeQuantities = PluginRuntime.GetOptionalBool(parameters, "includeQuantities") ?? false;
-
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, corridorName, OpenMode.ForRead);
-      var materials = new List<Dictionary<string, object?>>();
-      var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-      var baselines = CivilObjectUtils.GetPropertyValue<object>(corridor, "Baselines");
-      if (baselines is IEnumerable baselineEnumerable)
-      {
-        foreach (var baseline in baselineEnumerable)
-        {
-          if (baseline == null) continue;
-
-          var matCollection = CivilObjectUtils.InvokeMethod(baseline, "GetMaterialQuantities")
-            ?? CivilObjectUtils.InvokeMethod(baseline, "GetMaterials")
-            ?? CivilObjectUtils.GetPropertyValue<object>(baseline, "Materials");
-
-          if (matCollection is IEnumerable mq)
-          {
-            foreach (var material in mq)
-            {
-              if (material == null) continue;
-              var matName = CivilObjectUtils.GetName(material)
-                ?? CivilObjectUtils.GetStringProperty(material, "MaterialName")
-                ?? "Unknown";
-              if (seen.Contains(matName)) continue;
-              seen.Add(matName);
-
-              var matType = CivilObjectUtils.GetStringProperty(material, "MaterialType")
-                ?? CivilObjectUtils.GetStringProperty(material, "Type")
-                ?? string.Empty;
-              var description = CivilObjectUtils.GetStringProperty(material, "Description") ?? string.Empty;
-
-              var entry = new Dictionary<string, object?>
-              {
-                ["name"] = matName,
-                ["type"] = matType,
-                ["description"] = description,
-              };
-
-              if (includeQuantities)
-              {
-                var cutVol = CivilObjectUtils.GetPropertyValue<double?>(material, "CutQuantity")
-                  ?? CivilObjectUtils.GetDoubleProperty(material, "CutVolume") ?? 0;
-                var fillVol = CivilObjectUtils.GetPropertyValue<double?>(material, "FillQuantity")
-                  ?? CivilObjectUtils.GetDoubleProperty(material, "FillVolume") ?? 0;
-                entry["cutVolume"] = cutVol;
-                entry["fillVolume"] = fillVol;
-                entry["netVolume"] = cutVol - fillVol;
-                entry["units"] = CivilObjectUtils.VolumeUnits(database);
-              }
-
-              materials.Add(entry);
-            }
-          }
-        }
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["corridorName"] = corridor.Name,
-        ["materials"] = materials,
-        ["materialCount"] = materials.Count,
-      };
-    });
+    _ = PluginRuntime.GetRequiredString(parameters, "corridorName");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 QTO material lists belong to SampleLineGroup objects. Corridor baselines do not expose GetMaterials/GetMaterialQuantities; no empty or zero-valued material list was fabricated.");
   }
 
   // -------------------------------------------------------------------------
@@ -702,96 +498,30 @@ public static class QuantityCommands
   {
     var baseSurfaceName = PluginRuntime.GetRequiredString(parameters, "baseSurface");
     var designSurfaceName = PluginRuntime.GetRequiredString(parameters, "designSurface");
-    var alignmentName = PluginRuntime.GetOptionalString(parameters, "alignmentName");
     var startStation = PluginRuntime.GetOptionalDouble(parameters, "startStation");
     var endStation = PluginRuntime.GetOptionalDouble(parameters, "endStation");
-    var stationInterval = PluginRuntime.GetOptionalDouble(parameters, "stationInterval") ?? 25.0;
+    if (startStation.HasValue || endStation.HasValue || !string.IsNullOrWhiteSpace(PluginRuntime.GetOptionalString(parameters, "alignmentName")))
+      throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "Station-clipped earthwork requires sample lines/QTO. The managed TinVolumeSurface API computes whole-surface volume only; no station-volume approximation was used.");
 
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var baseSurface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, baseSurfaceName, OpenMode.ForRead);
       var designSurface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, designSurfaceName, OpenMode.ForRead);
-
-      var stations = new List<Dictionary<string, object?>>();
-      var cumulativeCut = 0.0;
-      var cumulativeFill = 0.0;
-
-      // Determine station range
-      double actualStart;
-      double actualEnd;
-
-      if (!string.IsNullOrWhiteSpace(alignmentName))
-      {
-        var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName!);
-        actualStart = startStation.HasValue ? Math.Max(startStation.Value, alignment.StartingStation) : alignment.StartingStation;
-        actualEnd = endStation.HasValue ? Math.Min(endStation.Value, alignment.EndingStation) : alignment.EndingStation;
-
-        // Sample elevations at each station interval
-        var currentStation = actualStart;
-        while (currentStation <= actualEnd + 1e-6)
-        {
-          // Get XY from alignment at this station
-          double x = 0, y = 0;
-          try
-          {
-            alignment.PointLocation(currentStation, 0, ref x, ref y);
-          }
-          catch
-          {
-            currentStation += stationInterval;
-            continue;
-          }
-
-          var baseElev = InvokeSurfaceElevationSafe(baseSurface, x, y);
-          var designElev = InvokeSurfaceElevationSafe(designSurface, x, y);
-
-          if (baseElev.HasValue && designElev.HasValue)
-          {
-            var diff = designElev.Value - baseElev.Value;
-            var cut = diff < 0 ? Math.Abs(diff) * stationInterval : 0;
-            var fill = diff > 0 ? diff * stationInterval : 0;
-            cumulativeCut += cut;
-            cumulativeFill += fill;
-
-            stations.Add(new Dictionary<string, object?>
-            {
-              ["station"] = currentStation,
-              ["x"] = x,
-              ["y"] = y,
-              ["baseElevation"] = baseElev.Value,
-              ["designElevation"] = designElev.Value,
-              ["cut"] = cut,
-              ["fill"] = fill,
-              ["cumCut"] = cumulativeCut,
-              ["cumFill"] = cumulativeFill,
-            });
-          }
-
-          if (currentStation >= actualEnd - 1e-6) break;
-          currentStation = Math.Min(currentStation + stationInterval, actualEnd);
-        }
-      }
-      else
-      {
-        // Without an alignment, use surface extents to derive a bounding grid
-        var baseGp = CivilObjectUtils.InvokeMethod(baseSurface, "GetGeneralProperties");
-        actualStart = startStation ?? 0;
-        actualEnd = endStation ?? 0;
-        // Return basic volume-only summary without station breakdown
-      }
+      var volumeId = TinVolumeSurface.Create($"MCP_TMP_EARTHWORK_{Guid.NewGuid():N}", baseSurface.ObjectId, designSurface.ObjectId);
+      var volumeSurface = CivilObjectUtils.GetRequiredObject<TinVolumeSurface>(transaction, volumeId, OpenMode.ForRead);
+      var volumes = volumeSurface.GetVolumeProperties();
 
       return new Dictionary<string, object?>
       {
         ["baseSurface"] = baseSurfaceName,
         ["designSurface"] = designSurfaceName,
-        ["alignmentName"] = alignmentName,
-        ["cumulativeCut"] = cumulativeCut,
-        ["cumulativeFill"] = cumulativeFill,
-        ["netEarthwork"] = cumulativeFill - cumulativeCut,
-        ["stationCount"] = stations.Count,
-        ["stations"] = stations,
-        ["units"] = CivilObjectUtils.LinearUnits(database),
+        ["cumulativeCut"] = volumes.UnadjustedCutVolume,
+        ["cumulativeFill"] = volumes.UnadjustedFillVolume,
+        ["netEarthwork"] = volumes.UnadjustedNetVolume,
+        ["stationCount"] = 0,
+        ["stations"] = Array.Empty<object>(),
         ["volumeUnits"] = CivilObjectUtils.VolumeUnits(database),
+        ["note"] = "Exact whole-surface TinVolumeSurface quantities; station breakdown is not exposed by this API path.",
       };
     });
   }
@@ -800,25 +530,12 @@ public static class QuantityCommands
   // Private helpers
   // -------------------------------------------------------------------------
 
-  private static AcDbObject? FindPipeNetworkByNameReflection(
+  private static AcDbObject? FindPipeNetworkByName(
     Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
     Transaction transaction,
     string name)
   {
-    foreach (var candidateProp in new[] { "PipeNetworkCollection", "NetworkCollection", "PipeNetworks", "Networks" })
-    {
-      var prop = civilDoc.GetType().GetProperty(candidateProp, BindingFlags.Public | BindingFlags.Instance);
-      var collection = prop?.GetValue(civilDoc);
-      foreach (var objectId in CivilObjectUtils.ToObjectIds(collection))
-      {
-        if (objectId == ObjectId.Null) continue;
-        var obj = transaction.GetObject(objectId, OpenMode.ForRead);
-        if (string.Equals(CivilObjectUtils.GetName(obj), name, StringComparison.OrdinalIgnoreCase))
-          return obj;
-      }
-    }
-    var methodResult = CivilObjectUtils.InvokeMethod(civilDoc, "GetPipeNetworkIds");
-    foreach (var objectId in CivilObjectUtils.ToObjectIds(methodResult))
+    foreach (ObjectId objectId in civilDoc.GetPipeNetworkIds())
     {
       if (objectId == ObjectId.Null) continue;
       var obj = transaction.GetObject(objectId, OpenMode.ForRead);
@@ -828,25 +545,12 @@ public static class QuantityCommands
     return null;
   }
 
-  private static AcDbObject? FindPressureNetworkByNameReflection(
+  private static AcDbObject? FindPressureNetworkByName(
     Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
     Transaction transaction,
     string name)
   {
-    foreach (var candidateProp in new[] { "PressureNetworkCollection", "PressureNetworks", "PressurePipeNetworks" })
-    {
-      var prop = civilDoc.GetType().GetProperty(candidateProp, BindingFlags.Public | BindingFlags.Instance);
-      var collection = prop?.GetValue(civilDoc);
-      foreach (var objectId in CivilObjectUtils.ToObjectIds(collection))
-      {
-        if (objectId == ObjectId.Null) continue;
-        var obj = transaction.GetObject(objectId, OpenMode.ForRead);
-        if (string.Equals(CivilObjectUtils.GetName(obj), name, StringComparison.OrdinalIgnoreCase))
-          return obj;
-      }
-    }
-    var methodResult = CivilObjectUtils.InvokeMethod(civilDoc, "GetPressureNetworkIds");
-    foreach (var objectId in CivilObjectUtils.ToObjectIds(methodResult))
+    foreach (ObjectId objectId in civilDoc.GetPressurePipeNetworkIds())
     {
       if (objectId == ObjectId.Null) continue;
       var obj = transaction.GetObject(objectId, OpenMode.ForRead);
@@ -860,15 +564,10 @@ public static class QuantityCommands
     Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
     Transaction transaction)
   {
-    foreach (var candidateProp in new[] { "PipeNetworkCollection", "NetworkCollection", "PipeNetworks", "Networks" })
+    foreach (ObjectId objectId in civilDoc.GetPipeNetworkIds())
     {
-      var prop = civilDoc.GetType().GetProperty(candidateProp, BindingFlags.Public | BindingFlags.Instance);
-      var collection = prop?.GetValue(civilDoc);
-      foreach (var objectId in CivilObjectUtils.ToObjectIds(collection))
-      {
-        if (objectId == ObjectId.Null) continue;
-        yield return transaction.GetObject(objectId, OpenMode.ForRead);
-      }
+      if (objectId == ObjectId.Null) continue;
+      yield return transaction.GetObject(objectId, OpenMode.ForRead);
     }
   }
 
@@ -897,6 +596,15 @@ public static class QuantityCommands
       if (v.HasValue) return v.Value;
     }
     return null;
+  }
+
+  private static double GetRequiredEngineeringDouble(object? value, string valueDescription, params string[] propertyNames)
+  {
+    var result = GetAnyDouble(value, propertyNames);
+    if (result.HasValue) return result.Value;
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      $"Could not read {valueDescription} from the managed API. Zero was not substituted.");
   }
 
   private static string? GetAnyString(object? value, params string[] propertyNames)

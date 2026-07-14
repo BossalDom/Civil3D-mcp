@@ -72,6 +72,10 @@ const AlignmentReportStationSampleSchema = z.object({
   units: z.string(),
 });
 
+const AlignmentStationSamplesResponseSchema = z.object({
+  samples: z.array(AlignmentReportStationSampleSchema),
+});
+
 const AlignmentReportResponseSchema = z.object({
   alignment: AlignmentDetailResponseSchema,
   summary: z.object({
@@ -388,7 +392,7 @@ export const ALIGNMENT_DOMAIN_DEFINITION: DomainToolDefinition = {
       capabilities: ["query", "analyze", "generate"],
       requiresActiveDrawing: true,
       safeForRetry: true,
-      pluginMethods: ["getAlignment", "alignmentStationToPoint"],
+      pluginMethods: ["getAlignment", "alignmentSampleStations"],
       execute: async (args) => await withApplicationConnection(async (appClient) => {
         const alignment = AlignmentDetailResponseSchema.parse(
           await appClient.sendCommand("getAlignment", {
@@ -407,18 +411,13 @@ export const ALIGNMENT_DOMAIN_DEFINITION: DomainToolDefinition = {
           maximumSamples,
         );
 
-        const stationSamples = [];
-        for (const station of stations) {
-          stationSamples.push(
-            AlignmentStationToPointResponseSchema.parse(
-              await appClient.sendCommand("alignmentStationToPoint", {
-                name: args.name,
-                station,
-                offset: args.offset ?? 0,
-              }),
-            ),
-          );
-        }
+        const stationSamples = AlignmentStationSamplesResponseSchema.parse(
+          await appClient.sendCommand("alignmentSampleStations", {
+            name: args.name,
+            stations,
+            offset: args.offset ?? 0,
+          }),
+        ).samples;
 
         const entityTypeBreakdown = alignment.entities.reduce(
           (accumulator, entity) => {

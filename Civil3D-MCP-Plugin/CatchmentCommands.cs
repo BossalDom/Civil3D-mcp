@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
@@ -256,10 +255,9 @@ public static class CatchmentCommands
       try
       {
         // Try to get points from the flow path object
-        var pointsProp = flowPath.GetType().GetProperty("Points", BindingFlags.Public | BindingFlags.Instance);
-        if (pointsProp != null)
+        var pointsCollection = Civil3DCompatibility.GetPropertyValue(flowPath, "Points");
+        if (pointsCollection != null)
         {
-          var pointsCollection = pointsProp.GetValue(flowPath);
           if (pointsCollection is Point3dCollection pt3dCol)
           {
             foreach (Point3d pt in pt3dCol)
@@ -365,66 +363,23 @@ public static class CatchmentCommands
   private static List<ObjectId> GetCatchmentGroupIds(object civilDoc, Database database)
   {
     var ids = new List<ObjectId>();
-
-    // Try CivilDocument.GetCatchmentGroups() (added in 2023 API)
-    try
+    if (Civil3DCompatibility.TryInvokeMethod(civilDoc, "GetCatchmentGroups", out var result))
     {
-      var method = civilDoc.GetType().GetMethod("GetCatchmentGroups", BindingFlags.Public | BindingFlags.Instance);
-      if (method != null)
+      foreach (var id in CivilObjectUtils.ToObjectIds(result))
       {
-        var result = method.Invoke(civilDoc, null);
-        if (result != null)
-        {
-          foreach (var id in CivilObjectUtils.ToObjectIds(result))
-          {
-            ids.Add(id);
-          }
-        }
+        ids.Add(id);
       }
-    }
-    catch
-    {
-      // Method not available in this version
     }
 
     if (ids.Count > 0) return ids;
 
-    // Fallback: try Database.GetCivilCatchmentGroups() extension method
-    try
+    if (Civil3DCompatibility.TryInvokeLoadedStaticMethod(
+      "GetCivilCatchmentGroups", typeof(Database), out result, database))
     {
-      var extensionTypes = AppDomain.CurrentDomain.GetAssemblies()
-        .SelectMany(a =>
-        {
-          try { return a.GetTypes(); }
-          catch { return Array.Empty<Type>(); }
-        })
-        .Where(t => t.IsClass && t.IsAbstract && t.IsSealed); // static classes
-
-      foreach (var type in extensionTypes)
+      foreach (var id in CivilObjectUtils.ToObjectIds(result))
       {
-        var extMethod = type.GetMethod("GetCivilCatchmentGroups",
-          BindingFlags.Public | BindingFlags.Static,
-          null,
-          new[] { typeof(Database) },
-          null);
-
-        if (extMethod != null)
-        {
-          var result = extMethod.Invoke(null, new object[] { database });
-          if (result != null)
-          {
-            foreach (var id in CivilObjectUtils.ToObjectIds(result))
-            {
-              ids.Add(id);
-            }
-          }
-          break;
-        }
+        ids.Add(id);
       }
-    }
-    catch
-    {
-      // Extension method not available
     }
 
     return ids;
@@ -440,43 +395,24 @@ public static class CatchmentCommands
 
     var ids = new List<ObjectId>();
 
-    // Try GetCatchmentIds() method
-    try
+    if (Civil3DCompatibility.TryInvokeMethod(groupObj, "GetCatchmentIds", out var result))
     {
-      var method = groupObj.GetType().GetMethod("GetCatchmentIds", BindingFlags.Public | BindingFlags.Instance);
-      if (method != null)
+      foreach (var id in CivilObjectUtils.ToObjectIds(result))
       {
-        var result = method.Invoke(groupObj, null);
-        if (result != null)
-        {
-          foreach (var id in CivilObjectUtils.ToObjectIds(result))
-          {
-            ids.Add(id);
-          }
-        }
+        ids.Add(id);
       }
     }
-    catch { /* method not available */ }
 
     if (ids.Count > 0) return ids;
 
-    // Try CatchmentIds property
-    try
+    result = Civil3DCompatibility.GetPropertyValue(groupObj, "CatchmentIds");
+    if (result != null)
     {
-      var prop = groupObj.GetType().GetProperty("CatchmentIds", BindingFlags.Public | BindingFlags.Instance);
-      if (prop != null)
+      foreach (var id in CivilObjectUtils.ToObjectIds(result))
       {
-        var result = prop.GetValue(groupObj);
-        if (result != null)
-        {
-          foreach (var id in CivilObjectUtils.ToObjectIds(result))
-          {
-            ids.Add(id);
-          }
-        }
+        ids.Add(id);
       }
     }
-    catch { /* property not available */ }
 
     return ids;
   }
@@ -646,18 +582,8 @@ public static class CatchmentCommands
   {
     foreach (var propertyName in propertyNames)
     {
-      var property = target.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-      if (property == null) continue;
-
-      try
-      {
-        var value = property.GetValue(target);
-        if (value != null)
-          return value.ToString();
-      }
-      catch
-      {
-      }
+      var value = Civil3DCompatibility.GetPropertyValue(target, propertyName);
+      if (value != null) return value.ToString();
     }
 
     return null;
@@ -667,18 +593,7 @@ public static class CatchmentCommands
   {
     foreach (var propertyName in propertyNames)
     {
-      var property = target.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-      if (property == null || !property.CanWrite) continue;
-
-      try
-      {
-        var coerced = Convert.ChangeType(value, property.PropertyType);
-        property.SetValue(target, coerced);
-        return;
-      }
-      catch
-      {
-      }
+      if (Civil3DCompatibility.TrySetProperty(target, propertyName, value)) return;
     }
   }
 }

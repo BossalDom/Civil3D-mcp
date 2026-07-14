@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
@@ -15,6 +14,99 @@ namespace Civil3DMcpPlugin;
 /// </summary>
 public static class ParcelEditingCommands
 {
+  // -------------------------------------------------------------------------
+  // listParcelSites
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> ListParcelSitesAsync()
+  {
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var rows = new List<Dictionary<string, object?>>();
+      foreach (ObjectId sid in EnumerateSiteIds(civilDoc))
+      {
+        var site = CivilObjectUtils.GetRequiredObject<Site>(transaction, sid, OpenMode.ForRead);
+        rows.Add(new Dictionary<string, object?>
+        {
+          ["name"] = site.Name,
+          ["handle"] = CivilObjectUtils.GetHandle(site),
+          ["parcelCount"] = EnumerateParcelIds(site, transaction).Count(),
+        });
+      }
+
+      return new Dictionary<string, object?>
+      {
+        ["sites"] = rows,
+      };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // listParcels
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> ListParcelsAsync(JsonObject? parameters)
+  {
+    var siteName = PluginRuntime.GetRequiredString(parameters, "siteName");
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var site = FindSiteByName(civilDoc, transaction, siteName);
+      var parcels = new List<Dictionary<string, object?>>();
+
+      foreach (ObjectId pid in EnumerateParcelIds(site, transaction))
+      {
+        var parcel = CivilObjectUtils.GetRequiredObject<Parcel>(transaction, pid, OpenMode.ForRead);
+        parcels.Add(new Dictionary<string, object?>
+        {
+          ["name"] = parcel.Name,
+          ["handle"] = CivilObjectUtils.GetHandle(parcel),
+          ["number"] = GetParcelNumber(parcel),
+          ["area"] = parcel.Area,
+          ["perimeter"] = GetParcelPerimeter(parcel),
+          ["style"] = CivilObjectUtils.GetStringProperty(parcel.StyleId.IsNull ? null : transaction.GetObject(parcel.StyleId, OpenMode.ForRead), "Name"),
+        });
+      }
+
+      return new Dictionary<string, object?>
+      {
+        ["siteName"] = siteName,
+        ["parcels"] = parcels,
+        ["units"] = new Dictionary<string, object?>
+        {
+          ["area"] = "sqft",
+          ["length"] = CivilObjectUtils.LinearUnits(database),
+        },
+      };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // getParcel
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> GetParcelAsync(JsonObject? parameters)
+  {
+    var siteName = PluginRuntime.GetRequiredString(parameters, "siteName");
+    var parcelName = PluginRuntime.GetRequiredString(parameters, "parcelName");
+
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var site = FindSiteByName(civilDoc, transaction, siteName);
+      var parcel = FindParcelByName(site, transaction, parcelName, OpenMode.ForRead);
+
+      return new Dictionary<string, object?>
+      {
+        ["siteName"] = siteName,
+        ["name"] = parcel.Name,
+        ["handle"] = CivilObjectUtils.GetHandle(parcel),
+        ["number"] = GetParcelNumber(parcel),
+        ["area"] = parcel.Area,
+        ["perimeter"] = GetParcelPerimeter(parcel),
+        ["style"] = CivilObjectUtils.GetStringProperty(parcel.StyleId.IsNull ? null : transaction.GetObject(parcel.StyleId, OpenMode.ForRead), "Name"),
+      };
+    });
+  }
+
   // -------------------------------------------------------------------------
   // createParcel
   // -------------------------------------------------------------------------
@@ -100,8 +192,7 @@ public static class ParcelEditingCommands
       if (!string.IsNullOrWhiteSpace(areaLabelStyle)) ApplyLabelStyleToParcel(parcel, areaLabelStyle, civilDoc, transaction);
       if (!string.IsNullOrWhiteSpace(description))
       {
-        TrySetProperty(parcel, "Description", description);
-        TrySetProperty(parcel, "TaxId", description);
+        parcel.Description = description;
       }
 
       return new Dictionary<string, object?>
@@ -170,6 +261,7 @@ public static class ParcelEditingCommands
     var outputPath = PluginRuntime.GetOptionalString(parameters, "outputPath");
     var includeCoordinates = PluginRuntime.GetOptionalBool(parameters, "includeCoordinates") ?? false;
     var units = PluginRuntime.GetOptionalString(parameters, "units") ?? "sqft";
+    var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
 
     var filterNames = parcelNamesNode?
       .Select(n => n?.GetValue<string>())
@@ -221,7 +313,7 @@ public static class ParcelEditingCommands
 
       if (!string.IsNullOrWhiteSpace(outputPath))
       {
-        WriteCsv(outputPath, rows, includeCoordinates);
+        outputPath = WriteCsv(outputPath, rows, includeCoordinates, overwrite);
       }
 
       return new Dictionary<string, object?>
@@ -320,37 +412,21 @@ public static class ParcelEditingCommands
   private static void ApplyStyleToParcel(Parcel parcel, string styleName,
     Autodesk.Civil.ApplicationServices.CivilDocument civilDoc, Transaction transaction)
   {
-    var stylesRoot = CivilObjectUtils.GetPropertyValue<object>(civilDoc, "Styles");
-    var parcelStyles = CivilObjectUtils.GetPropertyValue<object>(stylesRoot, "ParcelStyles");
-    if (parcelStyles == null) return;
-    foreach (ObjectId sid in CivilObjectUtils.ToObjectIds(parcelStyles))
-    {
-      var style = transaction.GetObject(sid, OpenMode.ForRead);
-      if (string.Equals(CivilObjectUtils.GetName(style), styleName, StringComparison.OrdinalIgnoreCase))
-      {
-        TrySetProperty(parcel, "StyleId", sid);
-        break;
-      }
-    }
+    parcel.StyleId = LookupUtils.GetParcelStyleId(civilDoc, transaction, styleName);
   }
 
   private static void ApplyLabelStyleToParcel(Parcel parcel, string labelStyleName,
     Autodesk.Civil.ApplicationServices.CivilDocument civilDoc, Transaction transaction)
   {
-    // Try via AreaLabelStyleId or similar property
-    TrySetProperty(parcel, "AreaLabelStyleName", labelStyleName);
+    parcel.AreaSelectionLabelStyleId = LookupUtils.GetParcelAreaLabelStyleId(civilDoc, transaction, labelStyleName);
   }
 
   private static IEnumerable<ObjectId> EnumerateSiteIds(Autodesk.Civil.ApplicationServices.CivilDocument civilDoc)
   {
-    foreach (var memberName in new[] { "Sites", "SiteCollection" })
+    foreach (ObjectId objectId in civilDoc.GetSiteIds())
     {
-      var collection = GetNamedMember(civilDoc, memberName);
-      foreach (var objectId in CivilObjectUtils.ToObjectIds(collection))
-      {
-        if (objectId != ObjectId.Null)
-          yield return objectId;
-      }
+      if (objectId != ObjectId.Null)
+        yield return objectId;
     }
   }
 
@@ -387,11 +463,8 @@ public static class ParcelEditingCommands
   {
     if (value == null) return null;
 
-    var property = value.GetType().GetProperty(memberName, BindingFlags.Public | BindingFlags.Instance);
-    if (property != null) return property.GetValue(value);
-
-    var field = value.GetType().GetField(memberName, BindingFlags.Public | BindingFlags.Instance);
-    return field?.GetValue(value);
+    return Civil3DCompatibility.GetPropertyValue(value, memberName)
+      ?? Civil3DCompatibility.GetFieldValue(value, memberName);
   }
 
   private static double? GetParcelPerimeter(Parcel parcel)
@@ -429,6 +502,11 @@ public static class ParcelEditingCommands
     return length;
   }
 
+  private static int GetParcelNumber(Parcel parcel)
+  {
+    return parcel.Number;
+  }
+
   private static double ConvertArea(double areaInDrawingUnits, string units)
   {
     return units.ToLowerInvariant() switch
@@ -446,37 +524,28 @@ public static class ParcelEditingCommands
     return sqFt;
   }
 
-  private static void WriteCsv(string outputPath, List<Dictionary<string, object?>> rows, bool includeCoordinates)
+  private static string WriteCsv(
+    string outputPath,
+    List<Dictionary<string, object?>> rows,
+    bool includeCoordinates,
+    bool overwrite)
   {
-    using var sw = new System.IO.StreamWriter(outputPath, false, System.Text.Encoding.UTF8);
-    sw.WriteLine("Name,Area,AreaUnits,Perimeter,Style");
+    var csv = new System.Text.StringBuilder();
+    csv.AppendLine("Name,Area,AreaUnits,Perimeter,Style");
     foreach (var row in rows)
     {
-      sw.WriteLine(string.Join(",",
+      csv.AppendLine(string.Join(",",
         row.GetValueOrDefault("name"), row.GetValueOrDefault("area"),
         row.GetValueOrDefault("areaUnits"), row.GetValueOrDefault("perimeter"),
         row.GetValueOrDefault("style")));
     }
-  }
 
-  private static void TrySetProperty(object obj, string propertyName, object? value)
-  {
-    try
-    {
-      var prop = obj.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-      if (prop != null && prop.CanWrite)
-        prop.SetValue(obj, Convert.ChangeType(value, prop.PropertyType));
-    }
-    catch { }
+    return FileBoundary.WriteAllTextAtomic(
+      outputPath, csv.ToString(), System.Text.Encoding.UTF8, overwrite, ".csv");
   }
 
   private static Type? FindType(string typeName)
   {
-    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-    {
-      var t = asm.GetType(typeName);
-      if (t != null) return t;
-    }
-    return null;
+    return Civil3DCompatibility.FindLoadedType(typeName);
   }
 }

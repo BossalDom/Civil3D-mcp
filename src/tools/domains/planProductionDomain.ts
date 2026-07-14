@@ -66,6 +66,7 @@ const canonicalPlanProductionInputShape = {
   viewportHandle: z.string().optional(),
   layoutNames: z.array(z.string()).optional(),
   outputPath: z.string().optional(),
+  overwrite: z.boolean().optional(),
   plotStyleTable: z.string().optional(),
   paperSize: z.string().optional(),
 };
@@ -147,6 +148,7 @@ const SheetPublishPdfArgsSchema = z.object({
   action: z.literal("sheet_publish_pdf"),
   layoutNames: z.array(z.string()).min(1),
   outputPath: z.string(),
+  overwrite: z.boolean().optional(),
   plotStyleTable: z.string().optional(),
   paperSize: z.string().optional(),
 });
@@ -155,6 +157,7 @@ const SheetSetExportArgsSchema = z.object({
   action: z.literal("sheet_set_export"),
   sheetSetName: z.string(),
   outputPath: z.string(),
+  overwrite: z.boolean().optional(),
   plotStyleTable: z.string().optional(),
 });
 
@@ -344,6 +347,7 @@ export const PLAN_PRODUCTION_DOMAIN_DEFINITION: DomainToolDefinition = {
         async (appClient) => await appClient.sendCommand("publishSheetPdf", {
           layoutNames: args.layoutNames,
           outputPath: args.outputPath,
+          overwrite: args.overwrite ?? false,
           plotStyleTable: args.plotStyleTable,
           paperSize: args.paperSize,
         }),
@@ -366,6 +370,7 @@ export const PLAN_PRODUCTION_DOMAIN_DEFINITION: DomainToolDefinition = {
         async (appClient) => await appClient.sendCommand("exportSheetSet", {
           sheetSetName: args.sheetSetName,
           outputPath: args.outputPath,
+          overwrite: args.overwrite ?? false,
           plotStyleTable: args.plotStyleTable,
         }),
       ),
@@ -574,6 +579,7 @@ export const PLAN_PRODUCTION_DOMAIN_DEFINITION: DomainToolDefinition = {
       inputShape: {
         layoutNames: z.array(z.string()).min(1),
         outputPath: z.string(),
+        overwrite: z.boolean().optional(),
         plotStyleTable: z.string().optional(),
         paperSize: z.string().optional(),
       },
@@ -584,6 +590,7 @@ export const PLAN_PRODUCTION_DOMAIN_DEFINITION: DomainToolDefinition = {
           action: "sheet_publish_pdf",
           layoutNames: rawArgs.layoutNames,
           outputPath: rawArgs.outputPath,
+          overwrite: rawArgs.overwrite,
           plotStyleTable: rawArgs.plotStyleTable,
           paperSize: rawArgs.paperSize,
         },
@@ -593,7 +600,7 @@ export const PLAN_PRODUCTION_DOMAIN_DEFINITION: DomainToolDefinition = {
       toolName: "civil3d_sheet_set_export",
       displayName: "Civil 3D Sheet Set Export",
       description: "Exports all sheets in a Plan Production sheet set to a single multi-page PDF.",
-      inputShape: { sheetSetName: z.string(), outputPath: z.string(), plotStyleTable: z.string().optional() },
+      inputShape: { sheetSetName: z.string(), outputPath: z.string(), overwrite: z.boolean().optional(), plotStyleTable: z.string().optional() },
       supportedActions: ["sheet_set_export"],
       resolveAction: (rawArgs) => ({
         action: "sheet_set_export",
@@ -601,6 +608,7 @@ export const PLAN_PRODUCTION_DOMAIN_DEFINITION: DomainToolDefinition = {
           action: "sheet_set_export",
           sheetSetName: rawArgs.sheetSetName,
           outputPath: rawArgs.outputPath,
+          overwrite: rawArgs.overwrite,
           plotStyleTable: rawArgs.plotStyleTable,
         },
       }),

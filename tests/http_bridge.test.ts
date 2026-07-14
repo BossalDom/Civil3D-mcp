@@ -27,6 +27,7 @@ vi.mock("../src/tools/civil3d_orchestrate.js", () => ({
 }));
 
 import { startHttpBridge } from "../src/httpBridge.js";
+import { Civil3DRpcError } from "../src/utils/SocketClient.js";
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -133,7 +134,10 @@ describe("httpBridge", () => {
       const res = await request("GET", `${handle.baseUrl}/health?deep=1`);
 
       expect(res.status).toBe(503);
-      expect(res.body).toMatchObject({ connected: false, error: "Plugin not running" });
+      expect(res.body).toEqual({
+        connected: false,
+        error: { code: "CIVIL3D.UNAVAILABLE", message: "Plugin not running" },
+      });
     });
   });
 
@@ -192,7 +196,12 @@ describe("httpBridge", () => {
       });
 
       expect(res.status).toBe(400);
-      expect(res.body).toMatchObject({ error: expect.stringContaining("tool") });
+      expect(res.body).toEqual({
+        error: {
+          code: "CIVIL3D.INVALID_INPUT",
+          message: expect.stringContaining("tool"),
+        },
+      });
     });
 
     it("returns 400 when the body is not valid JSON", async () => {
@@ -204,10 +213,15 @@ describe("httpBridge", () => {
       });
 
       expect(res.status).toBe(400);
-      expect(res.body).toMatchObject({ error: expect.stringMatching(/Invalid JSON body/i) });
+      expect(res.body).toEqual({
+        error: {
+          code: "CIVIL3D.INVALID_JSON",
+          message: expect.stringMatching(/Invalid JSON body/i),
+        },
+      });
     });
 
-    it("returns 500 with the error message when the handler throws", async () => {
+    it("maps a not-found handler failure to 404", async () => {
       hasToolHandlerMock.mockImplementation((name) => name === "civil3d_alignment");
       executeOrchestratorMock.mockRejectedValue(new Error("Alignment 'Foo' not found"));
       handle = await launchBridge();
@@ -217,8 +231,26 @@ describe("httpBridge", () => {
         body: JSON.stringify({ tool: "civil3d_alignment", parameters: { action: "get", name: "Foo" } }),
       });
 
-      expect(res.status).toBe(500);
-      expect(res.body).toMatchObject({ error: "Alignment 'Foo' not found" });
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({
+        error: { code: "CIVIL3D.OBJECT_NOT_FOUND", message: "Alignment 'Foo' not found" },
+      });
+    });
+
+    it("maps missing required fields to a validation response", async () => {
+      hasToolHandlerMock.mockReturnValue(true);
+      executeOrchestratorMock.mockRejectedValue(new Error("Missing required fields: name"));
+      handle = await launchBridge();
+
+      const res = await request("POST", `${handle.baseUrl}/execute`, {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool: "civil3d_surface", parameters: { action: "get" } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        error: { code: "CIVIL3D.INVALID_INPUT", message: "Missing required fields: name" },
+      });
     });
 
     it("rejects bodies that exceed maxBodyBytes with 413", async () => {
@@ -237,7 +269,12 @@ describe("httpBridge", () => {
       });
 
       expect(res.status).toBe(413);
-      expect(res.body).toMatchObject({ error: expect.stringContaining("exceeds 64 bytes") });
+      expect(res.body).toEqual({
+        error: {
+          code: "CIVIL3D.REQUEST_TOO_LARGE",
+          message: expect.stringContaining("exceeds 64 bytes"),
+        },
+      });
       expect(executeOrchestratorMock).not.toHaveBeenCalled();
     });
 
@@ -251,15 +288,49 @@ describe("httpBridge", () => {
         body: JSON.stringify({ tool: "does_not_exist", parameters: {} }),
       });
 
-      // executeBridgeTool throws a plain Error (not an HttpBridgeError),
-      // which the outer handler converts to a 500. This test asserts the
-      // current behaviour so any future change to return 404 is intentional.
-      expect(res.status).toBe(500);
-      expect(res.body).toMatchObject({ error: expect.stringContaining("not registered") });
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({
+        error: {
+          code: "CIVIL3D.METHOD_NOT_FOUND",
+          message: expect.stringContaining("not registered"),
+        },
+      });
+    });
+
+    it("maps Civil 3D domain errors to stable HTTP status and error codes", async () => {
+      hasToolHandlerMock.mockReturnValue(true);
+      executeOrchestratorMock.mockRejectedValue(
+        new Civil3DRpcError("Surface 'Missing' was not found", "CIVIL3D.OBJECT_NOT_FOUND", -32004),
+      );
+      handle = await launchBridge();
+
+      const res = await request("POST", `${handle.baseUrl}/execute`, {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool: "civil3d_surface", parameters: { action: "get", name: "Missing" } }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({
+        error: { code: "CIVIL3D.OBJECT_NOT_FOUND", message: "Surface 'Missing' was not found" },
+      });
     });
   });
 
   describe("authorization", () => {
+    it("refuses a non-loopback bind without authentication", () => {
+      expect(() => startHttpBridge({ host: "0.0.0.0", port: 0, authToken: "" }))
+        .toThrow(/MCP_HTTP_TOKEN is required/i);
+    });
+
+    it("refuses a non-loopback bind without an explicit Host allowlist", () => {
+      expect(() => startHttpBridge({
+        host: "0.0.0.0",
+        port: 0,
+        authToken: "secret-token",
+        allowedHosts: [],
+      })).toThrow(/MCP_HTTP_ALLOWED_HOSTS is required/i);
+    });
+
     it("accepts requests with the correct Authorization bearer token", async () => {
       hasToolHandlerMock.mockImplementation((name) => name === "civil3d_orchestrate");
       executeRegisteredToolMock.mockResolvedValue({ ok: true });
@@ -295,7 +366,7 @@ describe("httpBridge", () => {
       const res = await request("GET", `${handle.baseUrl}/tools`);
 
       expect(res.status).toBe(401);
-      expect(res.body).toMatchObject({ error: "Unauthorized" });
+      expect(res.body).toEqual({ error: { code: "CIVIL3D.AUTH_REQUIRED", message: "Unauthorized" } });
     });
 
     it("rejects requests with an incorrect token with 401", async () => {
@@ -306,7 +377,7 @@ describe("httpBridge", () => {
       });
 
       expect(res.status).toBe(401);
-      expect(res.body).toMatchObject({ error: "Unauthorized" });
+      expect(res.body).toEqual({ error: { code: "CIVIL3D.AUTH_REQUIRED", message: "Unauthorized" } });
     });
 
     it("does not enforce auth when authToken is empty (default dev mode)", async () => {
@@ -331,6 +402,55 @@ describe("httpBridge", () => {
       expect(response.headers.get("access-control-allow-methods")).toContain("POST");
       expect(response.headers.get("access-control-allow-headers") ?? "").toContain("Authorization");
     });
+
+    it("rejects browser origins that are not allowlisted", async () => {
+      handle = await launchBridge({ allowedOrigins: ["https://trusted.example"] });
+
+      const response = await fetch(`${handle.baseUrl}/tools`, {
+        headers: { Origin: "https://untrusted.example" },
+      });
+
+      expect(response.status).toBe(403);
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    });
+
+    it("echoes an explicitly allowlisted browser origin", async () => {
+      handle = await launchBridge({ allowedOrigins: ["https://trusted.example"] });
+
+      const response = await fetch(`${handle.baseUrl}/tools`, {
+        headers: { Origin: "https://trusted.example" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin"))
+        .toBe("https://trusted.example");
+    });
+  });
+
+  describe("Host validation", () => {
+    it("rejects a Host header outside the allowlist", async () => {
+      handle = await launchBridge({ allowedHosts: ["trusted.local"] });
+
+      const res = await request("GET", `${handle.baseUrl}/tools`, {
+        headers: { Host: "evil.local" },
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: { code: "CIVIL3D.FORBIDDEN", message: "Host is not allowed" } });
+    });
+
+    it("accepts the explicitly allowlisted binding Host", async () => {
+      handle = await launchBridge({ allowedHosts: ["127.0.0.1"] });
+
+      const res = await request("GET", `${handle.baseUrl}/tools`);
+
+      expect(res.status).toBe(200);
+    });
+
+    it("rejects wildcard Host and Origin configuration", () => {
+      expect(() => startHttpBridge({ port: 0, allowedHosts: ["*"] })).toThrow(/Wildcard/i);
+      expect(() => startHttpBridge({ port: 0, allowedOrigins: ["*"] })).toThrow(/Wildcard/i);
+    });
   });
 
   describe("unknown routes", () => {
@@ -340,7 +460,7 @@ describe("httpBridge", () => {
       const res = await request("GET", `${handle.baseUrl}/not-a-real-route`);
 
       expect(res.status).toBe(404);
-      expect(res.body).toMatchObject({ error: "Not found" });
+      expect(res.body).toEqual({ error: { code: "CIVIL3D.OBJECT_NOT_FOUND", message: "Not found" } });
     });
   });
 });

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { routeIntent, type RouteParams, type RouteResult } from "../orchestration/IntentRouter.js";
 import { findToolCatalogEntry } from "../orchestration/ToolCatalog.js";
 import { getProjectContext } from "../orchestration/ProjectContextService.js";
@@ -46,6 +45,7 @@ const Civil3DOrchestrateInputShape = {
   labelSet: z.string().optional(),
   filePath: z.string().optional(),
   outputPath: z.string().optional(),
+  overwrite: z.boolean().optional(),
   gridSpacing: z.number().optional(),
   designSpeed: z.number().optional(),
   inflow: z.number().optional(),
@@ -102,6 +102,7 @@ const ROUTE_PARAM_KEYS: Array<keyof RouteParams> = [
   "labelSet",
   "filePath",
   "outputPath",
+  "overwrite",
   "gridSpacing",
   "designSpeed",
   "inflow",
@@ -162,6 +163,7 @@ function buildMergedParams(args: OrchestrateArgs, routed: ReturnType<typeof rout
     labelSet: args.labelSet ?? routed.extractedParams.labelSet,
     filePath: args.filePath ?? routed.extractedParams.filePath,
     outputPath: args.outputPath ?? routed.extractedParams.outputPath,
+    overwrite: args.overwrite ?? routed.extractedParams.overwrite,
     gridSpacing: args.gridSpacing ?? routed.extractedParams.gridSpacing,
     designSpeed: args.designSpeed ?? routed.extractedParams.designSpeed,
     inflow: args.inflow ?? routed.extractedParams.inflow,
@@ -212,6 +214,7 @@ function buildDirectParams(args: OrchestrateArgs): RouteParams {
     labelSet: args.labelSet ?? extractedRequestParams.labelSet,
     filePath: args.filePath ?? extractedRequestParams.filePath,
     outputPath: args.outputPath ?? extractedRequestParams.outputPath,
+    overwrite: args.overwrite ?? extractedRequestParams.overwrite,
     gridSpacing: args.gridSpacing ?? extractedRequestParams.gridSpacing,
     designSpeed: args.designSpeed ?? extractedRequestParams.designSpeed,
     inflow: args.inflow ?? extractedRequestParams.inflow,
@@ -530,43 +533,4 @@ export async function executeCivil3DOrchestrate(rawArgs: OrchestrateArgs) {
   }
 
   return response;
-}
-
-export function registerCivil3DOrchestrateTool(server: McpServer) {
-  server.tool(
-    "civil3d_orchestrate",
-    "Routes a natural-language Civil 3D request to the best starting tool or action and executes routed work through the registered MCP tool surface.",
-    Civil3DOrchestrateInputShape,
-    async (rawArgs) => {
-      try {
-        const response = await executeCivil3DOrchestrate(rawArgs);
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        let errorMessage = "Failed to execute civil3d_orchestrate";
-        if (error instanceof Error) {
-          errorMessage += `: ${error.message}`;
-        } else if (typeof error === "string") {
-          errorMessage += `: ${error}`;
-        }
-        console.error("Error in civil3d_orchestrate tool:", error);
-        return {
-          content: [
-            {
-              type: "text",
-              text: errorMessage,
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-  );
 }

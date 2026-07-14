@@ -7,6 +7,9 @@ namespace Civil3DMcpPlugin;
 
 public sealed class RpcTcpServer
 {
+  private const int MaxRequestBytes = 1024 * 1024;
+  private static readonly TimeSpan RequestReadTimeout = TimeSpan.FromSeconds(30);
+
   private readonly int _port;
   private readonly Func<string, CancellationToken, Task<string>> _handler;
   private readonly CancellationTokenSource _cts = new();
@@ -62,48 +65,79 @@ public sealed class RpcTcpServer
 
   private async Task ProcessClientAsync(TcpClient client, CancellationToken cancellationToken)
   {
-    using (client)
-    await using (var stream = client.GetStream())
+    try
     {
-      var request = await ReadSingleJsonObjectAsync(stream, cancellationToken);
-      if (string.IsNullOrWhiteSpace(request))
+      using (client)
+      await using (var stream = client.GetStream())
       {
-        return;
-      }
+        var request = await ReadSingleJsonObjectAsync(stream, cancellationToken);
+        if (string.IsNullOrWhiteSpace(request))
+        {
+          return;
+        }
 
-      var response = await _handler(request, cancellationToken);
-      var responseBytes = Encoding.UTF8.GetBytes(response);
-      await stream.WriteAsync(responseBytes, cancellationToken);
-      await stream.FlushAsync(cancellationToken);
+        var response = await _handler(request, cancellationToken);
+        var responseBytes = Encoding.UTF8.GetBytes(response);
+        await stream.WriteAsync(responseBytes, cancellationToken);
+        await stream.FlushAsync(cancellationToken);
+      }
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    {
+      // Normal plugin shutdown.
+    }
+    catch (OperationCanceledException)
+    {
+      PluginLog.Warn("RpcTcpServer", $"Closed a client that did not send a complete request within {RequestReadTimeout.TotalSeconds:0} seconds.");
+    }
+    catch (InvalidDataException ex)
+    {
+      PluginLog.Warn("RpcTcpServer", ex.Message);
+    }
+    catch (Exception ex)
+    {
+      PluginLog.Error("RpcTcpServer", "Client request processing failed.", ex);
     }
   }
 
   private static async Task<string> ReadSingleJsonObjectAsync(NetworkStream stream, CancellationToken cancellationToken)
   {
     var buffer = new byte[8192];
-    var builder = new StringBuilder();
+    using var requestBuffer = new MemoryStream();
+    using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    readTimeout.CancelAfter(RequestReadTimeout);
 
-    while (!cancellationToken.IsCancellationRequested)
+    while (!readTimeout.IsCancellationRequested)
     {
-      var bytesRead = await stream.ReadAsync(buffer, cancellationToken);
+      var bytesRead = await stream.ReadAsync(buffer, readTimeout.Token);
       if (bytesRead <= 0)
       {
         break;
       }
 
-      builder.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
-      var text = builder.ToString();
+      if (requestBuffer.Length + bytesRead > MaxRequestBytes)
+      {
+        throw new InvalidDataException($"RPC request exceeds the {MaxRequestBytes}-byte limit.");
+      }
+
+      await requestBuffer.WriteAsync(buffer.AsMemory(0, bytesRead), readTimeout.Token);
+      var requestBytes = requestBuffer.GetBuffer();
+      var requestLength = checked((int)requestBuffer.Length);
 
       try
       {
-        using var _ = JsonDocument.Parse(text);
-        return text;
+        using var _ = JsonDocument.Parse(
+          new ReadOnlyMemory<byte>(requestBytes, 0, requestLength));
+        return Encoding.UTF8.GetString(requestBytes, 0, requestLength);
       }
       catch (JsonException)
       {
       }
     }
 
-    return builder.ToString();
+    return Encoding.UTF8.GetString(
+      requestBuffer.GetBuffer(),
+      0,
+      checked((int)requestBuffer.Length));
   }
 }

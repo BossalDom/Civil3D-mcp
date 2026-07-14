@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import {
   hasToolHandler,
   executeRegisteredTool,
@@ -6,6 +7,7 @@ import {
 } from "./tools/toolHandlerRegistry.js";
 import { executeToolCallViaOrchestrator } from "./tools/civil3d_orchestrate.js";
 import { createLogger } from "./utils/logger.js";
+import { Civil3DRpcError } from "./utils/SocketClient.js";
 
 const log = createLogger("HttpBridge");
 
@@ -14,6 +16,8 @@ export interface HttpBridgeOptions {
   port?: number;
   authToken?: string | undefined;
   maxBodyBytes?: number;
+  allowedOrigins?: string[];
+  allowedHosts?: string[];
 }
 
 interface ResolvedHttpBridgeConfig {
@@ -21,6 +25,41 @@ interface ResolvedHttpBridgeConfig {
   port: number;
   authToken: string | undefined;
   maxBodyBytes: number;
+  allowedOrigins: string[];
+  allowedHosts: string[];
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "localhost"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "[::1]";
+}
+
+function parseAllowedOrigins(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+function parseAllowedHosts(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((host) => normalizeHost(host))
+    .filter((host): host is string => Boolean(host));
+}
+
+function normalizeHost(authority: string | undefined): string | undefined {
+  if (!authority?.trim()) return undefined;
+  try {
+    return new URL(`http://${authority.trim()}`).hostname
+      .replace(/^\[|\]$/g, "")
+      .toLowerCase();
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveConfig(options: HttpBridgeOptions = {}): ResolvedHttpBridgeConfig {
@@ -29,7 +68,7 @@ function resolveConfig(options: HttpBridgeOptions = {}): ResolvedHttpBridgeConfi
     ? parseInt(process.env.MCP_HTTP_MAX_BODY_BYTES, 10)
     : 1048576;
 
-  return {
+  const config: ResolvedHttpBridgeConfig = {
     host: options.host ?? process.env.MCP_HTTP_HOST ?? "127.0.0.1",
     port: options.port ?? envPort,
     authToken:
@@ -37,11 +76,43 @@ function resolveConfig(options: HttpBridgeOptions = {}): ResolvedHttpBridgeConfi
         ? options.authToken || undefined
         : process.env.MCP_HTTP_TOKEN?.trim() || undefined,
     maxBodyBytes: options.maxBodyBytes ?? envMaxBody,
+    allowedOrigins: options.allowedOrigins
+      ?? parseAllowedOrigins(process.env.MCP_HTTP_ALLOWED_ORIGINS),
+    allowedHosts: options.allowedHosts
+      ? options.allowedHosts
+        .map((host) => normalizeHost(host))
+        .filter((host): host is string => Boolean(host))
+      : parseAllowedHosts(process.env.MCP_HTTP_ALLOWED_HOSTS),
   };
+
+  if (!isLoopbackHost(config.host) && !config.authToken) {
+    throw new Error(
+      `MCP_HTTP_TOKEN is required when the HTTP bridge binds to non-loopback host '${config.host}'.`,
+    );
+  }
+
+  if (config.allowedHosts.length === 0) {
+    if (!isLoopbackHost(config.host)) {
+      throw new Error(
+        `MCP_HTTP_ALLOWED_HOSTS is required when the HTTP bridge binds to non-loopback host '${config.host}'.`,
+      );
+    }
+    config.allowedHosts = ["localhost", "127.0.0.1", "::1"];
+  }
+
+  if (config.allowedOrigins.includes("*") || config.allowedHosts.includes("*")) {
+    throw new Error("Wildcard HTTP origins and hosts are not permitted.");
+  }
+
+  return config;
 }
 
 class HttpBridgeError extends Error {
-  constructor(public readonly statusCode: number, message: string) {
+  constructor(
+    public readonly statusCode: number,
+    public readonly code: string,
+    message: string,
+  ) {
     super(message);
   }
 }
@@ -61,6 +132,7 @@ async function readJsonBody(request: IncomingMessage, maxBodyBytes: number): Pro
     if (total > maxBodyBytes) {
       throw new HttpBridgeError(
         413,
+        "CIVIL3D.REQUEST_TOO_LARGE",
         `Request body exceeds ${maxBodyBytes} bytes.`,
       );
     }
@@ -76,7 +148,7 @@ async function readJsonBody(request: IncomingMessage, maxBodyBytes: number): Pro
     return JSON.parse(raw) as ExecuteRequest;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new HttpBridgeError(400, `Invalid JSON body: ${message}`);
+    throw new HttpBridgeError(400, "CIVIL3D.INVALID_JSON", `Invalid JSON body: ${message}`);
   }
 }
 
@@ -87,24 +159,101 @@ function isAuthorized(request: IncomingMessage, authToken: string | undefined): 
 
   const header = request.headers["authorization"];
   if (typeof header === "string" && header.startsWith("Bearer ")) {
-    return header.slice("Bearer ".length).trim() === authToken;
+    return tokensEqual(header.slice("Bearer ".length).trim(), authToken);
   }
 
   const altHeader = request.headers["x-mcp-token"];
   if (typeof altHeader === "string") {
-    return altHeader.trim() === authToken;
+    return tokensEqual(altHeader.trim(), authToken);
   }
 
   return false;
 }
 
+function tokensEqual(candidate: string, expected: string): boolean {
+  const candidateBytes = Buffer.from(candidate, "utf8");
+  const expectedBytes = Buffer.from(expected, "utf8");
+  return candidateBytes.length === expectedBytes.length
+    && timingSafeEqual(candidateBytes, expectedBytes);
+}
+
+function isOriginAllowed(request: IncomingMessage, allowedOrigins: string[]): boolean {
+  const origin = request.headers.origin;
+  return typeof origin !== "string" || allowedOrigins.includes(origin);
+}
+
+function isHostAllowed(request: IncomingMessage, allowedHosts: string[]): boolean {
+  const host = normalizeHost(request.headers.host);
+  return typeof host === "string" && allowedHosts.includes(host);
+}
+
+function applyCorsHeaders(
+  request: IncomingMessage,
+  response: ServerResponse,
+  allowedOrigins: string[],
+): void {
+  const origin = request.headers.origin;
+  if (typeof origin === "string" && allowedOrigins.includes(origin)) {
+    response.setHeader("Access-Control-Allow-Origin", origin);
+    response.setHeader("Vary", "Origin");
+  }
+}
+
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
   response.statusCode = statusCode;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
-  response.setHeader("Access-Control-Allow-Origin", "*");
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
   response.end(JSON.stringify(payload));
+}
+
+function writeError(
+  response: ServerResponse,
+  statusCode: number,
+  code: string,
+  message: string,
+): void {
+  writeJson(response, statusCode, { error: { code, message } });
+}
+
+function statusForDomainCode(code: string): number {
+  if (code === "CIVIL3D.INVALID_JSON" || code === "CIVIL3D.INVALID_REQUEST" || code === "CIVIL3D.INVALID_INPUT") return 400;
+  if (code === "CIVIL3D.AUTH_REQUIRED") return 401;
+  if (code === "CIVIL3D.FORBIDDEN" || code === "CIVIL3D.PATH_NOT_ALLOWED" || code === "CIVIL3D.FILE_TYPE_NOT_ALLOWED") return 403;
+  if (code === "CIVIL3D.OBJECT_NOT_FOUND" || code === "CIVIL3D.METHOD_NOT_FOUND") return 404;
+  if (code === "CIVIL3D.CONFLICT") return 409;
+  if (code === "CIVIL3D.REQUEST_TOO_LARGE") return 413;
+  if (code === "CIVIL3D.TIMEOUT") return 504;
+  if (code === "CIVIL3D.NO_DRAWING" || code === "CIVIL3D.UNAVAILABLE" || code === "CIVIL3D.HOST_BUSY") return 503;
+  return 500;
+}
+
+function mapHttpError(error: unknown): HttpBridgeError {
+  if (error instanceof HttpBridgeError) return error;
+  if (error instanceof Civil3DRpcError) {
+    return new HttpBridgeError(statusForDomainCode(error.code), error.code, error.message);
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  if (/timed out|timeout/i.test(message)) {
+    return new HttpBridgeError(504, "CIVIL3D.TIMEOUT", message);
+  }
+  if (/failed to connect|connection (?:failed|closed)|plugin not running/i.test(message)) {
+    return new HttpBridgeError(503, "CIVIL3D.UNAVAILABLE", message);
+  }
+  if (/approval required|already exists|conflict/i.test(message)) {
+    return new HttpBridgeError(409, "CIVIL3D.CONFLICT", message);
+  }
+  if (/not found|not registered|does not exist/i.test(message)) {
+    return new HttpBridgeError(404, "CIVIL3D.OBJECT_NOT_FOUND", message);
+  }
+  if (/missing required|required fields?|invalid (?:input|parameter)|validation/i.test(message)) {
+    return new HttpBridgeError(400, "CIVIL3D.INVALID_INPUT", message);
+  }
+  if (error instanceof Error && error.name === "ZodError") {
+    return new HttpBridgeError(400, "CIVIL3D.INVALID_INPUT", message);
+  }
+  return new HttpBridgeError(500, "CIVIL3D.INTERNAL_ERROR", message);
 }
 
 /**
@@ -174,7 +323,9 @@ async function executeBridgeTool(toolName: string, parameters: Record<string, un
 
   // 3. Not found
   const registeredCount = listRegisteredToolNames().length;
-  throw new Error(
+  throw new HttpBridgeError(
+    404,
+    "CIVIL3D.METHOD_NOT_FOUND",
     `Tool '${toolName}' is not registered (${registeredCount} tools available) ` +
     `and is not a legacy bridge endpoint. Check the tool name.`
   );
@@ -198,10 +349,10 @@ async function handleHealth(request: IncomingMessage, response: ServerResponse):
     const result = await executeBridgeTool("civil3d_health", {});
     writeJson(response, 200, result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const mapped = mapHttpError(error);
     writeJson(response, 503, {
       connected: false,
-      error: message,
+      error: { code: "CIVIL3D.UNAVAILABLE", message: mapped.message },
     });
   }
 }
@@ -214,7 +365,7 @@ async function handleExecute(
   try {
     const body = await readJsonBody(request, maxBodyBytes);
     if (!body.tool || typeof body.tool !== "string") {
-      writeJson(response, 400, { error: "Request body must include a string 'tool' property." });
+      writeError(response, 400, "CIVIL3D.INVALID_INPUT", "Request body must include a string 'tool' property.");
       return;
     }
 
@@ -225,18 +376,18 @@ async function handleExecute(
     const result = await executeBridgeTool(body.tool, parameters);
     writeJson(response, 200, result);
   } catch (error) {
-    if (error instanceof HttpBridgeError) {
-      writeJson(response, error.statusCode, { error: error.message });
-      return;
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    writeJson(response, 500, { error: message });
+    const mapped = mapHttpError(error);
+    writeError(response, mapped.statusCode, mapped.code, mapped.message);
   }
 }
 
-function writePreflight(response: ServerResponse): void {
+function writePreflight(
+  request: IncomingMessage,
+  response: ServerResponse,
+  allowedOrigins: string[],
+): void {
   response.statusCode = 204;
-  response.setHeader("Access-Control-Allow-Origin", "*");
+  applyCorsHeaders(request, response, allowedOrigins);
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-MCP-Token");
   response.end();
@@ -251,14 +402,26 @@ export function startHttpBridge(options: HttpBridgeOptions = {}) {
       const rawUrl = request.url ?? "/";
       const path = rawUrl.split("?", 1)[0];
 
+      if (!isHostAllowed(request, config.allowedHosts)) {
+        writeError(response, 403, "CIVIL3D.FORBIDDEN", "Host is not allowed");
+        return;
+      }
+
+      if (!isOriginAllowed(request, config.allowedOrigins)) {
+        writeError(response, 403, "CIVIL3D.FORBIDDEN", "Origin is not allowed");
+        return;
+      }
+
+      applyCorsHeaders(request, response, config.allowedOrigins);
+
       if (method === "OPTIONS") {
-        writePreflight(response);
+        writePreflight(request, response, config.allowedOrigins);
         return;
       }
 
       // Auth applies to every non-preflight route when MCP_HTTP_TOKEN is set.
       if (!isAuthorized(request, config.authToken)) {
-        writeJson(response, 401, { error: "Unauthorized" });
+        writeError(response, 401, "CIVIL3D.AUTH_REQUIRED", "Unauthorized");
         return;
       }
 
@@ -278,14 +441,10 @@ export function startHttpBridge(options: HttpBridgeOptions = {}) {
         return;
       }
 
-      writeJson(response, 404, { error: "Not found" });
+      writeError(response, 404, "CIVIL3D.OBJECT_NOT_FOUND", "Not found");
     } catch (error) {
-      if (error instanceof HttpBridgeError) {
-        writeJson(response, error.statusCode, { error: error.message });
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      writeJson(response, 500, { error: message });
+      const mapped = mapHttpError(error);
+      writeError(response, mapped.statusCode, mapped.code, mapped.message);
     }
   });
 
@@ -294,6 +453,8 @@ export function startHttpBridge(options: HttpBridgeOptions = {}) {
       host: config.host,
       port: config.port,
       authEnabled: Boolean(config.authToken),
+      allowedOrigins: config.allowedOrigins,
+      allowedHosts: config.allowedHosts,
       maxBodyBytes: config.maxBodyBytes,
     });
   });

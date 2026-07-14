@@ -18,6 +18,13 @@ public static class StmCommands
   public static Task<object?> ExportStmAsync(JsonObject? parameters)
   {
     var filePath = PluginRuntime.GetOptionalString(parameters, "filePath");
+    if (!string.IsNullOrWhiteSpace(filePath))
+    {
+      filePath = FileBoundary.ResolveExportPath(
+        filePath,
+        PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false,
+        ".stm");
+    }
 
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -58,6 +65,10 @@ public static class StmCommands
   public static Task<object?> ImportStmAsync(JsonObject? parameters)
   {
     var filePath = PluginRuntime.GetOptionalString(parameters, "filePath");
+    if (!string.IsNullOrWhiteSpace(filePath))
+    {
+      filePath = FileBoundary.ResolveImportPath(filePath, ".stm");
+    }
 
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {

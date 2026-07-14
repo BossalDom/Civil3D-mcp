@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.Civil.DatabaseServices;
@@ -267,9 +266,10 @@ public static class CorridorEditingCommands
         var targetType = CivilObjectUtils.GetStringProperty(t, "TargetType")
           ?? CivilObjectUtils.GetStringProperty(t, "Type");
 
-        var targetIdProp = t?.GetType().GetProperty("TargetId") ?? t?.GetType().GetProperty("ObjectId");
+        var targetId = Civil3DCompatibility.GetPropertyValue<ObjectId?>(t, "TargetId")
+          ?? Civil3DCompatibility.GetPropertyValue<ObjectId?>(t, "ObjectId");
         string? targetName = null;
-        if (targetIdProp?.GetValue(t) is ObjectId tid && !tid.IsNull)
+        if (targetId is ObjectId tid && !tid.IsNull)
         {
           var targetObj = transaction.GetObject(tid, OpenMode.ForRead);
           targetName = CivilObjectUtils.GetName(targetObj);
@@ -325,26 +325,19 @@ public static class CorridorEditingCommands
   private static bool ApplyTargetMapping(BaselineRegion region, string paramName, string targetType, ObjectId targetId)
   {
     // Try via SetTarget or AssignTarget methods
-    var result = CivilObjectUtils.InvokeMethod(region, "SetTarget", paramName, targetId);
-    if (result != null) return true;
-
-    result = CivilObjectUtils.InvokeMethod(region, "AssignTarget", paramName, targetId);
-    if (result != null) return true;
+    if (Civil3DCompatibility.TryInvokeMethod(region, "SetTarget", out _, paramName, targetId)) return true;
+    if (Civil3DCompatibility.TryInvokeMethod(region, "AssignTarget", out _, paramName, targetId)) return true;
 
     // Try via Targets collection
     var targets = CivilObjectUtils.GetPropertyValue<object>(region, "Targets");
     if (targets != null)
     {
-      var setMethod = targets.GetType().GetMethods()
-        .FirstOrDefault(m => m.Name == "SetTarget" || m.Name == "Add" || m.Name == "AssignTarget");
-      if (setMethod != null)
+      foreach (var methodName in new[] { "SetTarget", "Add", "AssignTarget" })
       {
-        try
+        if (Civil3DCompatibility.TryInvokeMethod(targets, methodName, out _, paramName, targetId))
         {
-          setMethod.Invoke(targets, [paramName, targetId]);
           return true;
         }
-        catch { }
       }
     }
 

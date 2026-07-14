@@ -10,9 +10,12 @@
   "scripts": {
     "clean": "rimraf build",
     "prebuild": "npm run clean",
-    "build": "tsc",
+    "build": "tsc && node ./scripts/copy-static-assets.mjs",
+    "start": "node ./build/index.js",
     "test": "vitest run",
+    "test:p2-boundaries": "dotnet run --project ./tests/FileBoundaryHarness/FileBoundaryHarness.csproj",
     "test:watch": "vitest",
+    "test:live-plugin": "npm run build && node ./scripts/verify-live-plugin.mjs",
     "claude:add": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-claude-mcp.ps1 -Scope project",
     "claude:add:user": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-claude-mcp.ps1 -Scope user",
     "claude:print-add": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-claude-mcp.ps1 -Scope project -PrintOnly"
@@ -32,13 +35,11 @@
   },
   "homepage": "https://github.com/Sacred-G/Civil3D-mcp#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.7.0",
-    "ws": "^8.18.1",
-    "zod": "^3.24.2"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
-    "@types/ws": "^8.18.0",
     "rimraf": "^5.0.10",
     "typescript": "^5.8.2",
     "vitest": "^4.1.0"

@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Reflection;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.Civil.ApplicationServices;
 using Autodesk.Civil.DatabaseServices;
@@ -22,8 +21,7 @@ public static class CivilObjectUtils
       return null;
     }
 
-    var nameProperty = value.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance);
-    return nameProperty?.GetValue(value)?.ToString();
+    return Civil3DCompatibility.GetPropertyValue(value, "Name")?.ToString();
   }
 
   public static string? GetStringProperty(object? value, string propertyName)
@@ -33,8 +31,7 @@ public static class CivilObjectUtils
       return null;
     }
 
-    var property = value.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-    return property?.GetValue(value)?.ToString();
+    return Civil3DCompatibility.GetPropertyValue(value, propertyName)?.ToString();
   }
 
   public static T? GetPropertyValue<T>(object? value, string propertyName)
@@ -44,31 +41,7 @@ public static class CivilObjectUtils
       return default;
     }
 
-    var property = value.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-    if (property == null)
-    {
-      return default;
-    }
-
-    var raw = property.GetValue(value);
-    if (raw == null)
-    {
-      return default;
-    }
-
-    if (raw is T typed)
-    {
-      return typed;
-    }
-
-    var targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
-    if (targetType.IsInstanceOfType(raw))
-    {
-      return (T)(object)raw;
-    }
-
-    var converted = Convert.ChangeType(raw, targetType);
-    return (T)(object)converted!;
+    return Civil3DCompatibility.GetPropertyValue<T>(value, propertyName);
   }
 
   public static object? InvokeMethod(object? value, string methodName, params object?[] arguments)
@@ -78,28 +51,7 @@ public static class CivilObjectUtils
       return null;
     }
 
-    var methods = value.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
-      .Where(m => m.Name == methodName)
-      .ToArray();
-
-    foreach (var method in methods)
-    {
-      var parameters = method.GetParameters();
-      if (parameters.Length != arguments.Length)
-      {
-        continue;
-      }
-
-      try
-      {
-        return method.Invoke(value, arguments);
-      }
-      catch
-      {
-      }
-    }
-
-    return null;
+    return Civil3DCompatibility.InvokeMethod(value, methodName, arguments);
   }
 
   public static IEnumerable<ObjectId> ToObjectIds(object? collection)
@@ -230,8 +182,7 @@ public static class CivilObjectUtils
   public static double? GetDoubleProperty(object? value, string propertyName)
   {
     if (value == null) return null;
-    var prop = value.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-    var raw = prop?.GetValue(value);
+    var raw = Civil3DCompatibility.GetPropertyValue(value, propertyName);
     if (raw == null) return null;
     try { return Convert.ToDouble(raw); } catch { return null; }
   }
@@ -239,8 +190,7 @@ public static class CivilObjectUtils
   public static bool? GetBoolProperty(object? value, string propertyName)
   {
     if (value == null) return null;
-    var prop = value.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-    var raw = prop?.GetValue(value);
+    var raw = Civil3DCompatibility.GetPropertyValue(value, propertyName);
     if (raw == null) return null;
     try { return Convert.ToBoolean(raw); } catch { return null; }
   }
@@ -255,34 +205,12 @@ public static class CivilObjectUtils
 
   public static void TrySetName(AcDbObject obj, string name)
   {
-    var prop = obj.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance);
-    try { prop?.SetValue(obj, name); } catch { /* ignore */ }
+    Civil3DCompatibility.TrySetProperty(obj, "Name", name);
   }
 
   public static object? InvokeStaticMethod(Type type, string methodName, params object?[] arguments)
   {
-    var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Static)
-      .Where(m => m.Name == methodName)
-      .ToArray();
-
-    foreach (var method in methods)
-    {
-      var parameters = method.GetParameters();
-      if (parameters.Length != arguments.Length)
-      {
-        continue;
-      }
-
-      try
-      {
-        return method.Invoke(null, arguments);
-      }
-      catch
-      {
-      }
-    }
-
-    return null;
+    return Civil3DCompatibility.InvokeStaticMethod(type, methodName, arguments);
   }
 
   public static void TrySetLayer(AcDbObject obj, string layer, Database database, Transaction transaction)
@@ -298,8 +226,7 @@ public static class CivilObjectUtils
         lt!.Add(ltr);
         transaction.AddNewlyCreatedDBObject(ltr, true);
       }
-      var prop = obj.GetType().GetProperty("Layer", BindingFlags.Public | BindingFlags.Instance);
-      prop?.SetValue(obj, layer);
+      Civil3DCompatibility.TrySetProperty(obj, "Layer", layer);
     }
     catch { /* ignore layer errors */ }
   }

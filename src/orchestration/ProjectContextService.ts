@@ -7,17 +7,13 @@ export interface ProjectContext {
 }
 
 export async function getProjectContext(selectedObjectLimit = 25): Promise<ProjectContext> {
-  return await withApplicationConnection(async (appClient) => {
-    const [drawingInfo, objectTypesResponse, selectedObjectsResponse] = await Promise.all([
-      appClient.sendCommand("getDrawingInfo", {}),
-      appClient.sendCommand("listCivilObjectTypes", {}),
-      appClient.sendCommand("getSelectedCivilObjectsInfo", { limit: selectedObjectLimit }),
-    ]);
+  const context = await withApplicationConnection(async (appClient) =>
+    appClient.sendCommand("getProjectContext", { selectedObjectLimit }),
+  ) as Partial<ProjectContext>;
 
-    return {
-      drawingInfo: drawingInfo ?? null,
-      objectTypes: Array.isArray(objectTypesResponse) ? objectTypesResponse : [],
-      selectedObjects: Array.isArray(selectedObjectsResponse) ? selectedObjectsResponse : [],
-    };
-  });
+  return {
+    drawingInfo: context.drawingInfo ?? null,
+    objectTypes: Array.isArray(context.objectTypes) ? context.objectTypes : [],
+    selectedObjects: Array.isArray(context.selectedObjects) ? context.selectedObjects : [],
+  };
 }

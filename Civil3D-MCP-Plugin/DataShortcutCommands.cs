@@ -1,6 +1,5 @@
 using System.Collections;
 using System.Linq;
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -309,20 +308,7 @@ public static class DataShortcutCommands
 
   private static IEnumerable<ObjectId> GetPipeNetworkIds(CivilDocument civilDoc)
   {
-    foreach (var candidateProp in new[] { "PipeNetworkCollection", "NetworkCollection", "PipeNetworks", "Networks" })
-    {
-      var prop = civilDoc.GetType().GetProperty(candidateProp, BindingFlags.Public | BindingFlags.Instance);
-      var collection = prop?.GetValue(civilDoc);
-      foreach (var objectId in CivilObjectUtils.ToObjectIds(collection))
-      {
-        if (objectId != ObjectId.Null)
-        {
-          yield return objectId;
-        }
-      }
-    }
-
-    foreach (var objectId in CivilObjectUtils.ToObjectIds(CivilObjectUtils.InvokeMethod(civilDoc, "GetPipeNetworkIds")))
+    foreach (ObjectId objectId in civilDoc.GetPipeNetworkIds())
     {
       if (objectId != ObjectId.Null)
       {
@@ -333,20 +319,7 @@ public static class DataShortcutCommands
 
   private static IEnumerable<ObjectId> GetPressureNetworkIds(CivilDocument civilDoc)
   {
-    foreach (var candidateProp in new[] { "PressureNetworkCollection", "PressureNetworks" })
-    {
-      var prop = civilDoc.GetType().GetProperty(candidateProp, BindingFlags.Public | BindingFlags.Instance);
-      var collection = prop?.GetValue(civilDoc);
-      foreach (var objectId in CivilObjectUtils.ToObjectIds(collection))
-      {
-        if (objectId != ObjectId.Null)
-        {
-          yield return objectId;
-        }
-      }
-    }
-
-    foreach (var objectId in CivilObjectUtils.ToObjectIds(CivilObjectUtils.InvokeMethod(civilDoc, "GetPressureNetworkIds")))
+    foreach (ObjectId objectId in civilDoc.GetPressurePipeNetworkIds())
     {
       if (objectId != ObjectId.Null)
       {

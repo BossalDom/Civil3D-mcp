@@ -82,6 +82,7 @@ const canonicalWorkflowInputShape = {
   ]),
   corridorName: z.string().optional(),
   outputPath: z.string().optional(),
+  overwrite: z.boolean().optional(),
   includeAlignments: z.boolean().optional(),
   includeProfiles: z.boolean().optional(),
   includePipeNetworks: z.boolean().optional(),
@@ -155,6 +156,7 @@ const CorridorQcReportArgsSchema = z.object({
   action: z.literal("corridor_qc_report"),
   corridorName: z.string(),
   outputPath: z.string().optional(),
+  overwrite: z.boolean().optional(),
   includeAlignments: z.boolean().optional(),
   includeProfiles: z.boolean().optional(),
   includePipeNetworks: z.boolean().optional(),
@@ -199,6 +201,7 @@ const ProjectStartupArgsSchema = z.object({
   action: z.literal("project_startup"),
   templatePath: z.string().optional(),
   saveAs: z.string().optional(),
+  overwrite: z.boolean().optional(),
 });
 
 const ProjectReferenceSetupArgsSchema = z.object({
@@ -206,6 +209,7 @@ const ProjectReferenceSetupArgsSchema = z.object({
   references: z.array(WorkflowShortcutReferenceSchema).min(1),
   dryRun: z.boolean().optional(),
   saveAs: z.string().optional(),
+  overwrite: z.boolean().optional(),
 });
 
 const DrawingReadinessAuditArgsSchema = z.object({
@@ -321,6 +325,7 @@ export const WORKFLOW_DOMAIN_DEFINITION: DomainToolDefinition = {
         async (appClient) => await appClient.sendCommand("corridorQcReportWorkflow", {
           corridorName: args.corridorName,
           outputPath: args.outputPath,
+          overwrite: args.overwrite ?? false,
           includeAlignments: args.includeAlignments,
           includeProfiles: args.includeProfiles,
           includePipeNetworks: args.includePipeNetworks,
@@ -425,6 +430,7 @@ export const WORKFLOW_DOMAIN_DEFINITION: DomainToolDefinition = {
         async (appClient) => await appClient.sendCommand("projectStartupWorkflow", {
           templatePath: args.templatePath,
           saveAs: args.saveAs,
+          overwrite: args.overwrite ?? false,
         }),
       ),
     },
@@ -441,6 +447,7 @@ export const WORKFLOW_DOMAIN_DEFINITION: DomainToolDefinition = {
           references: args.references,
           dryRun: args.dryRun,
           saveAs: args.saveAs,
+          overwrite: args.overwrite ?? false,
         }),
       ),
     },
@@ -757,6 +764,7 @@ export const WORKFLOW_DOMAIN_DEFINITION: DomainToolDefinition = {
       inputShape: {
         corridorName: z.string(),
         outputPath: z.string().optional(),
+        overwrite: z.boolean().optional(),
         includeAlignments: z.boolean().optional(),
         includeProfiles: z.boolean().optional(),
         includePipeNetworks: z.boolean().optional(),
@@ -770,6 +778,7 @@ export const WORKFLOW_DOMAIN_DEFINITION: DomainToolDefinition = {
           action: "corridor_qc_report",
           corridorName: rawArgs.corridorName,
           outputPath: rawArgs.outputPath,
+          overwrite: rawArgs.overwrite,
           includeAlignments: rawArgs.includeAlignments,
           includeProfiles: rawArgs.includeProfiles,
           includePipeNetworks: rawArgs.includePipeNetworks,
@@ -875,6 +884,7 @@ export const WORKFLOW_DOMAIN_DEFINITION: DomainToolDefinition = {
       inputShape: {
         templatePath: z.string().optional(),
         saveAs: z.string().optional(),
+        overwrite: z.boolean().optional(),
       },
       supportedActions: ["project_startup"],
       requiresActiveDrawing: false,
@@ -884,6 +894,7 @@ export const WORKFLOW_DOMAIN_DEFINITION: DomainToolDefinition = {
           action: "project_startup",
           templatePath: rawArgs.templatePath,
           saveAs: rawArgs.saveAs,
+          overwrite: rawArgs.overwrite,
         },
       }),
     },
@@ -895,6 +906,7 @@ export const WORKFLOW_DOMAIN_DEFINITION: DomainToolDefinition = {
         references: z.array(WorkflowShortcutReferenceSchema).min(1),
         dryRun: z.boolean().optional(),
         saveAs: z.string().optional(),
+        overwrite: z.boolean().optional(),
       },
       supportedActions: ["project_reference_setup"],
       resolveAction: (rawArgs) => ({
@@ -904,6 +916,7 @@ export const WORKFLOW_DOMAIN_DEFINITION: DomainToolDefinition = {
           references: rawArgs.references,
           dryRun: rawArgs.dryRun,
           saveAs: rawArgs.saveAs,
+          overwrite: rawArgs.overwrite,
         },
       }),
     },

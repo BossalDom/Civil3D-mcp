@@ -192,6 +192,7 @@ const canonicalHydrologyInputShape = {
   timeOfConcentration_hr: z.number().optional(),
   stormDuration_hr: z.number().optional(),
   filePath: z.string().optional(),
+  overwrite: z.boolean().optional(),
   findLowPointSampleSpacing: z.number().optional(),
   catchmentSampleSpacing: z.number().optional(),
   runoffAreaUnits: AreaUnitsSchema.optional(),
@@ -343,6 +344,7 @@ const ListSsaCapabilitiesArgsSchema = z.object({
 const ExportStmArgsSchema = z.object({
   action: z.literal("export_stm"),
   filePath: z.string().optional(),
+  overwrite: z.boolean().optional(),
 });
 
 const ImportStmArgsSchema = z.object({
@@ -715,7 +717,7 @@ export const HYDROLOGY_DOMAIN_DEFINITION: DomainToolDefinition = {
       safeForRetry: false,
       pluginMethods: ["exportStm"],
       execute: async (args) => await withApplicationConnection(
-        async (appClient) => await appClient.sendCommand("exportStm", { filePath: args.filePath }),
+        async (appClient) => await appClient.sendCommand("exportStm", { filePath: args.filePath, overwrite: args.overwrite ?? false }),
       ),
     },
     import_stm: {
@@ -928,6 +930,7 @@ export const HYDROLOGY_DOMAIN_DEFINITION: DomainToolDefinition = {
       inputShape: {
         action: z.enum(["list_ssa_capabilities", "export_stm", "import_stm", "open_storm_sanitary_analysis"]),
         filePath: z.string().optional(),
+        overwrite: z.boolean().optional(),
       },
       supportedActions: ["list_ssa_capabilities", "export_stm", "import_stm", "open_storm_sanitary_analysis"],
       resolveAction: (rawArgs) => ({ action: String(rawArgs.action ?? ""), args: rawArgs }),

@@ -77,7 +77,7 @@ If you want the fastest path from clone to a working Claude + Civil 3D setup on 
 
 ## Features
 
-- **180+ MCP tools** covering the complete Civil 3D design workflow
+- **Compact default MCP surface** with one canonical tool per domain; 180+ specialized aliases remain available on demand
 - **Native workflow execution** for corridor QC, surface comparison, project startup, grading conversion, plan publish, data shortcuts, and hydrology pipelines
 - **Full road design pipeline** — alignments, profiles, corridors, cross-sections, superelevation
 - **Surface analysis** — elevation bands, slope distribution, aspect, watershed, cut/fill volumes
@@ -93,6 +93,26 @@ If you want the fastest path from clone to a working Claude + Civil 3D setup on 
 - **Intersection design** and corridor target mapping
 - **Sight distance** calculations and AASHTO stopping sight distance checks
 - **Assembly/subassembly** creation and editing
+
+### Protected action flow
+
+Destructive, file-writing, import/export, and other non-retryable drawing
+mutations use a three-step policy flow:
+
+1. Call `civil3d_preview_action` with the target `toolName`, `action`, and the
+   exact parameters to validate the operation and learn whether approval is required.
+2. If required, call `civil3d_request_approval` with the same values. It issues
+   a short-lived, single-use token bound to the active drawing and those exact parameters.
+3. Retry the target tool call with `approvalToken`. Changing the drawing,
+   action, or parameters invalidates the token.
+
+Set `CIVIL3D_APPROVAL_MODE=disabled` only for isolated local development or
+test environments; production deployments should retain the default policy.
+
+The default MCP registration exposes one canonical tool per domain, plus the
+orchestrator and approval tools. Set `CIVIL3D_ENABLE_TOOL_ALIASES=true` only
+when a client needs the full specialized alias surface. HTTP and orchestration
+keep internal access to aliases in either mode.
 
 ---
 
@@ -724,6 +744,7 @@ The Node MCP server reads the following variables at startup. All are optional; 
 | `CIVIL3D_PORT` | `8080` | TCP port the plugin listens on (see `PluginRuntime.Port`). |
 | `CIVIL3D_CONNECT_TIMEOUT` | `5000` | Milliseconds the server waits for a TCP connection to the plugin before giving up. |
 | `CIVIL3D_COMMAND_TIMEOUT` | `120000` | Milliseconds any single JSON-RPC command may run before the Node side rejects the call. Increase for heavy corridor rebuilds. |
+| `CIVIL3D_MAX_RESPONSE_BYTES` | `8388608` | Maximum buffered response size accepted from the Civil 3D plugin. |
 | `CIVIL3D_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. Logs are written to stderr. |
 
 ### HTTP bridge (Copilot / local HTTP clients → Node)
@@ -734,6 +755,30 @@ The Node MCP server reads the following variables at startup. All are optional; 
 | `MCP_HTTP_PORT` | `3000` | Port the HTTP bridge listens on. |
 | `MCP_HTTP_TOKEN` | *(unset)* | Optional shared secret. When set, every request to the bridge must include `Authorization: Bearer <token>` or `X-MCP-Token: <token>`. Leave unset to keep the loopback-only open mode. |
 | `MCP_HTTP_MAX_BODY_BYTES` | `1048576` | Maximum accepted `POST /execute` body size in bytes. Requests exceeding this receive `413 Payload Too Large`. |
+| `MCP_HTTP_ALLOWED_ORIGINS` | *(unset)* | Comma-separated browser origins allowed to call the bridge. Requests without an `Origin` header, such as native clients, are unaffected. |
+| `MCP_HTTP_ALLOWED_HOSTS` | Loopback hostnames | Comma-separated HTTP `Host` names accepted by the bridge. Required with `MCP_HTTP_TOKEN` for non-loopback binds. Ports are ignored during comparison. |
+
+The bridge refuses to start on a non-loopback host unless `MCP_HTTP_TOKEN` is
+configured. Docker Compose also requires this token and publishes the bridge on
+the host loopback interface by default.
+
+### Plugin filesystem boundaries
+
+Set these variables in the environment that launches Civil 3D. Roots are
+semicolon-separated on Windows; every caller-supplied path is canonicalized and
+must stay beneath an allowed root. If no roots are configured, the plugin uses
+the current user's Documents folder.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CIVIL3D_FILE_ROOTS` | User Documents | Shared fallback roots for imports and exports. |
+| `CIVIL3D_IMPORT_ROOTS` | `CIVIL3D_FILE_ROOTS` | Optional import-only roots for templates, DEM files, LandXML, STM, and other source artifacts. |
+| `CIVIL3D_EXPORT_ROOTS` | `CIVIL3D_FILE_ROOTS` | Optional export-only roots for drawings and generated reports. |
+
+Import/export tools enforce operation-specific extensions. Generated text and
+CSV artifacts are written to a temporary file in the destination directory and
+then atomically moved into place. Existing files are rejected unless the tool
+call explicitly supplies `overwrite: true`.
 
 ### HTTP bridge endpoints
 
@@ -761,6 +806,19 @@ Content-Type: application/json
 
 { "tool": "civil3d_health", "parameters": {} }
 ```
+
+### Verify the live Civil 3D plugin
+
+With Civil 3D open, a drawing active, and `C3DMCPSTATUS` reporting port 8080,
+run this read-only P0 smoke check:
+
+```powershell
+npm run test:live-plugin
+```
+
+It calls `getCivil3DHealth` and retrieves drawing context without mutating the
+open drawing. Set `CIVIL3D_HOST` and `CIVIL3D_PORT` first if the plugin does not
+use the default loopback endpoint.
 
 ---
 

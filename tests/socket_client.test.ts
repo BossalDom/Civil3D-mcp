@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as net from "net";
-import { ApplicationClientConnection } from "../src/utils/SocketClient.js";
+import { ApplicationClientConnection, Civil3DRpcError } from "../src/utils/SocketClient.js";
 
 describe("ApplicationClientConnection", () => {
   let client: ApplicationClientConnection;
@@ -97,7 +97,11 @@ describe("ApplicationClientConnection", () => {
           const response = {
             jsonrpc: "2.0",
             id: request.id,
-            error: { code: -32600, message: "Surface not found" },
+            error: {
+              code: -32004,
+              message: "Surface not found",
+              data: { code: "CIVIL3D.OBJECT_NOT_FOUND" },
+            },
           };
           socket.write(JSON.stringify(response));
         });
@@ -110,9 +114,14 @@ describe("ApplicationClientConnection", () => {
         connClient.connect();
       });
 
-      await expect(
-        connClient.sendCommand("getSurface", { name: "NonExistent" })
-      ).rejects.toThrow("Surface not found");
+      const error = await connClient.sendCommand("getSurface", { name: "NonExistent" })
+        .then(() => undefined, (reason) => reason);
+      expect(error).toBeInstanceOf(Civil3DRpcError);
+      expect(error).toMatchObject({
+        message: "Surface not found",
+        code: "CIVIL3D.OBJECT_NOT_FOUND",
+        rpcCode: -32004,
+      });
       connClient.disconnect();
     });
 
@@ -143,6 +152,49 @@ describe("ApplicationClientConnection", () => {
 
       const result = await connClient.sendCommand("getSurfaceElevation", { x: 100, y: 200 });
       expect(result).toEqual({ elevation: 123.45 });
+      connClient.disconnect();
+    });
+
+    it("rejects malformed JSON-RPC error envelopes", async () => {
+      server.on("connection", (socket) => {
+        socket.on("data", (data) => {
+          const request = JSON.parse(data.toString());
+          socket.write(JSON.stringify({
+            jsonrpc: "2.0",
+            id: request.id,
+            error: { code: "CIVIL3D.OBJECT_NOT_FOUND", message: "Wrong code type" },
+          }));
+        });
+      });
+
+      const connClient = new ApplicationClientConnection("localhost", serverPort);
+      await new Promise<void>((resolve, reject) => {
+        connClient.socket.on("connect", () => resolve());
+        connClient.socket.on("error", reject);
+        connClient.connect();
+      });
+
+      await expect(connClient.sendCommand("getSurface", { name: "Missing" }))
+        .rejects.toThrow("Invalid JSON-RPC 2.0 error response");
+      connClient.disconnect();
+    });
+
+    it("should reject pending commands when the plugin connection closes", async () => {
+      server.on("connection", (socket) => {
+        socket.once("data", () => socket.destroy());
+      });
+
+      const connClient = new ApplicationClientConnection("localhost", serverPort);
+      await new Promise<void>((resolve, reject) => {
+        connClient.socket.on("connect", () => resolve());
+        connClient.socket.on("error", reject);
+        connClient.connect();
+      });
+
+      await expect(connClient.sendCommand("interruptedCommand", {})).rejects.toThrow(
+        "connection closed",
+      );
+      expect(connClient.responseCallbacks.size).toBe(0);
       connClient.disconnect();
     });
   });

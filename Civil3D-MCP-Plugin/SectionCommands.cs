@@ -1,7 +1,10 @@
 using System.Text.Json.Nodes;
+using System.IO;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.Civil.ApplicationServices;
 using Autodesk.Civil.DatabaseServices;
+using System.Linq;
 
 namespace Civil3DMcpPlugin;
 
@@ -162,4 +165,383 @@ public static class SectionCommands
       throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Sample line group '{sampleLineGroupName}' was not found.");
     });
   }
+
+  // -------------------------------------------------------------------------
+  // createSectionViews
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> CreateSectionViewsAsync(JsonObject? parameters)
+  {
+    var alignmentName = PluginRuntime.GetRequiredString(parameters, "alignmentName");
+    var sampleLineGroupName = PluginRuntime.GetRequiredString(parameters, "sampleLineGroupName");
+    var insertionX = PluginRuntime.GetRequiredDouble(parameters, "insertionX");
+    var insertionY = PluginRuntime.GetRequiredDouble(parameters, "insertionY");
+    var style = PluginRuntime.GetOptionalString(parameters, "style");
+    var bandSetStyle = PluginRuntime.GetOptionalString(parameters, "bandSetStyle");
+    var leftOffset = PluginRuntime.GetOptionalDouble(parameters, "leftOffset");
+    var rightOffset = PluginRuntime.GetOptionalDouble(parameters, "rightOffset");
+    var stationStart = PluginRuntime.GetOptionalDouble(parameters, "stationStart");
+    var stationEnd = PluginRuntime.GetOptionalDouble(parameters, "stationEnd");
+    var rows = PluginRuntime.GetOptionalInt(parameters, "rows");
+    var gapBetweenViews = PluginRuntime.GetOptionalDouble(parameters, "gapBetweenViews");
+
+    if (rows.HasValue || gapBetweenViews.HasValue)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.API_ERROR",
+        "Civil 3D 2026 SectionViewGroup draft placement uses drawing settings; per-call rows and gapBetweenViews are not exposed by the .NET API.");
+    }
+
+    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
+      var group = FindSampleLineGroup(alignment, transaction, sampleLineGroupName);
+      var styleId = LookupUtils.GetSectionViewStyleId(civilDoc, transaction, style);
+      var bandSetId = LookupUtils.GetSectionViewBandSetId(civilDoc, transaction, bandSetStyle);
+      var insertionPoint = new Point3d(insertionX, insertionY, 0);
+
+      var createdGroup = CreateSectionViewGroup(
+        alignment,
+        group,
+        insertionPoint,
+        leftOffset,
+        rightOffset,
+        stationStart,
+        stationEnd);
+      var createdViews = OpenSectionViews(createdGroup, transaction, OpenMode.ForWrite).ToList();
+      ApplySectionViewStyles(createdViews, styleId, bandSetId, applyToAll: true);
+
+      return new Dictionary<string, object?>
+      {
+        ["alignmentName"] = alignment.Name,
+        ["sampleLineGroupName"] = group.Name,
+        ["created"] = createdViews.Count,
+        ["layoutSource"] = "Civil 3D SectionViewGroup draft placement settings",
+        ["insertionPoint"] = new Dictionary<string, object?>
+        {
+          ["x"] = insertionPoint.X,
+          ["y"] = insertionPoint.Y,
+        },
+      };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // listSectionViews
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> ListSectionViewsAsync(JsonObject? parameters)
+  {
+    var alignmentName = PluginRuntime.GetOptionalString(parameters, "alignmentName");
+    var sampleLineGroupName = PluginRuntime.GetOptionalString(parameters, "sampleLineGroupName");
+
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      List<Dictionary<string, object?>> result = new();
+      var alignments = new List<Alignment>();
+      if (string.IsNullOrWhiteSpace(alignmentName))
+      {
+        alignments.AddRange(
+          civilDoc.GetAlignmentIds()
+            .Cast<ObjectId>()
+            .Select(id => CivilObjectUtils.GetRequiredObject<Alignment>(transaction, id, OpenMode.ForRead)));
+      }
+      else
+      {
+        alignments.Add(CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName));
+      }
+
+      foreach (var alignment in alignments)
+      {
+        foreach (var group in ListSampleLineGroups(alignment, transaction, sampleLineGroupName))
+        {
+          foreach (var view in EnumerateSectionViews(group, transaction))
+          {
+            result.Add(MapSectionViewSummary(view, group, alignment));
+          }
+        }
+      }
+
+      if (result.Count == 0)
+      {
+        throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", "No section views found for the requested filters.");
+      }
+
+      return new Dictionary<string, object?>
+      {
+        ["sectionViews"] = result,
+        ["count"] = result.Count,
+      };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // updateSectionViewStyles
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> UpdateSectionViewStylesAsync(JsonObject? parameters)
+  {
+    var alignmentName = PluginRuntime.GetRequiredString(parameters, "alignmentName");
+    var sampleLineGroupName = PluginRuntime.GetRequiredString(parameters, "sampleLineGroupName");
+    var style = PluginRuntime.GetOptionalString(parameters, "style");
+    var bandSetStyle = PluginRuntime.GetOptionalString(parameters, "bandSetStyle");
+    var applyToAll = PluginRuntime.GetOptionalBool(parameters, "applyToAll") ?? true;
+
+    if (style == null && bandSetStyle == null)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "updateSectionViewStyles requires 'style' or 'bandSetStyle'.");
+    }
+
+    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
+      var group = FindSampleLineGroup(alignment, transaction, sampleLineGroupName);
+      var styleId = string.IsNullOrWhiteSpace(style) ? ObjectId.Null : LookupUtils.GetSectionViewStyleId(civilDoc, transaction, style);
+      var bandSetId = LookupUtils.GetSectionViewBandSetId(civilDoc, transaction, bandSetStyle);
+
+      var sectionViews = EnumerateSectionViews(group, transaction).ToList();
+      if (sectionViews.Count == 0)
+      {
+        throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"No section views exist for sample line group '{sampleLineGroupName}'.");
+      }
+
+      var styleUpdated = ApplySectionViewStyles(sectionViews, styleId, bandSetId, applyToAll);
+
+      return new Dictionary<string, object?>
+      {
+        ["alignmentName"] = alignment.Name,
+        ["sampleLineGroupName"] = group.Name,
+        ["updated"] = styleUpdated,
+      };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // createSectionViewGroup
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> CreateSectionViewGroupAsync(JsonObject? parameters)
+  {
+    var alignmentName = PluginRuntime.GetRequiredString(parameters, "alignmentName");
+    var sampleLineGroupName = PluginRuntime.GetRequiredString(parameters, "sampleLineGroupName");
+    var insertionX = PluginRuntime.GetRequiredDouble(parameters, "insertionX");
+    var insertionY = PluginRuntime.GetRequiredDouble(parameters, "insertionY");
+    var style = PluginRuntime.GetOptionalString(parameters, "style");
+    var plotStyle = PluginRuntime.GetOptionalString(parameters, "plotStyle");
+    var rows = PluginRuntime.GetOptionalInt(parameters, "rows");
+    var columns = PluginRuntime.GetOptionalInt(parameters, "columns");
+    var gapX = PluginRuntime.GetOptionalDouble(parameters, "gapX");
+    var gapY = PluginRuntime.GetOptionalDouble(parameters, "gapY");
+
+    if (rows.HasValue || columns.HasValue || gapX.HasValue || gapY.HasValue)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.API_ERROR",
+        "Civil 3D 2026 SectionViewGroup draft placement uses drawing settings; per-call rows, columns, gapX, and gapY are not exposed by the .NET API.");
+    }
+
+    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
+      var group = FindSampleLineGroup(alignment, transaction, sampleLineGroupName);
+      var styleId = LookupUtils.GetSectionViewStyleId(civilDoc, transaction, style);
+      var plotStyleId = LookupUtils.GetGroupPlotStyleId(civilDoc, transaction, plotStyle);
+      var insertionPoint = new Point3d(insertionX, insertionY, 0);
+
+      var createdGroup = CreateSectionViewGroup(
+        alignment,
+        group,
+        insertionPoint,
+        null,
+        null,
+        null,
+        null);
+      if (plotStyleId != ObjectId.Null)
+      {
+        createdGroup.PlotStyleId = plotStyleId;
+      }
+      var createdViews = OpenSectionViews(createdGroup, transaction, OpenMode.ForWrite).ToList();
+      ApplySectionViewStyles(createdViews, styleId, ObjectId.Null, applyToAll: true);
+
+      return new Dictionary<string, object?>
+      {
+        ["alignmentName"] = alignment.Name,
+        ["sampleLineGroupName"] = group.Name,
+        ["created"] = createdViews.Count,
+        ["layoutSource"] = "Civil 3D SectionViewGroup draft placement settings",
+        ["insertionPoint"] = new Dictionary<string, object?>
+        {
+          ["x"] = insertionPoint.X,
+          ["y"] = insertionPoint.Y,
+        },
+      };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // exportSectionData
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> ExportSectionDataAsync(JsonObject? parameters)
+  {
+    var alignmentName = PluginRuntime.GetRequiredString(parameters, "alignmentName");
+    var sampleLineGroupName = PluginRuntime.GetRequiredString(parameters, "sampleLineGroupName");
+    var outputPath = PluginRuntime.GetRequiredString(parameters, "outputPath");
+    var includeElevations = PluginRuntime.GetOptionalBool(parameters, "includeElevations") ?? true;
+    var includeMaterials = PluginRuntime.GetOptionalBool(parameters, "includeMaterials") ?? false;
+    var stationStart = PluginRuntime.GetOptionalDouble(parameters, "stationStart");
+    var stationEnd = PluginRuntime.GetOptionalDouble(parameters, "stationEnd");
+
+    _ = FileBoundary.ResolveExportPath(
+      outputPath,
+      PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false,
+      ".csv");
+
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 does not expose a section-view CSV export method. No CSV with fabricated offsets, elevations, or materials was written.");
+  }
+
+  private static SampleLineGroup FindSampleLineGroup(Alignment alignment, Transaction transaction, string sampleLineGroupName)
+  {
+    var groupIds = alignment.GetSampleLineGroupIds();
+    if (groupIds.Count == 0)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"No sample line groups exist for alignment '{alignment.Name}'.");
+    }
+
+    foreach (ObjectId groupId in groupIds)
+    {
+      var group = CivilObjectUtils.GetRequiredObject<SampleLineGroup>(transaction, groupId, OpenMode.ForRead);
+      if (string.Equals(group.Name, sampleLineGroupName, StringComparison.OrdinalIgnoreCase))
+      {
+        return group;
+      }
+    }
+
+    throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Sample line group '{sampleLineGroupName}' was not found.");
+  }
+
+  private static IEnumerable<SampleLineGroup> ListSampleLineGroups(Alignment alignment, Transaction transaction, string? sampleLineGroupName = null)
+  {
+    var groupIds = alignment.GetSampleLineGroupIds();
+    if (groupIds.Count == 0)
+    {
+      return Enumerable.Empty<SampleLineGroup>();
+    }
+
+    var result = new List<SampleLineGroup>();
+    foreach (ObjectId groupId in groupIds)
+    {
+      var group = CivilObjectUtils.GetRequiredObject<SampleLineGroup>(transaction, groupId, OpenMode.ForRead);
+      if (string.IsNullOrWhiteSpace(sampleLineGroupName) || string.Equals(group.Name, sampleLineGroupName, StringComparison.OrdinalIgnoreCase))
+      {
+        result.Add(group);
+      }
+    }
+
+    return result;
+  }
+
+  private static IEnumerable<SectionView> EnumerateSectionViews(SampleLineGroup group, Transaction transaction)
+  {
+    foreach (SectionViewGroup sectionViewGroup in group.SectionViewGroups)
+    {
+      foreach (var sectionView in OpenSectionViews(sectionViewGroup, transaction, OpenMode.ForRead))
+      {
+        yield return sectionView;
+      }
+    }
+  }
+
+  private static IEnumerable<SectionView> OpenSectionViews(SectionViewGroup group, Transaction transaction, OpenMode openMode)
+  {
+    foreach (ObjectId viewId in group.GetSectionViewIds())
+    {
+      if (viewId != ObjectId.Null)
+      {
+        yield return CivilObjectUtils.GetRequiredObject<SectionView>(transaction, viewId, openMode);
+      }
+    }
+  }
+
+  private static SectionViewGroup CreateSectionViewGroup(
+    Alignment alignment,
+    SampleLineGroup group,
+    Point3d insertionPoint,
+    double? leftOffset,
+    double? rightOffset,
+    double? stationStart,
+    double? stationEnd)
+  {
+    if (leftOffset.HasValue != rightOffset.HasValue)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "leftOffset and rightOffset must be supplied together.");
+    }
+    if (leftOffset.HasValue && leftOffset.Value >= rightOffset!.Value)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "leftOffset must be less than rightOffset for Civil 3D section-view ranges.");
+    }
+
+    using var rangeOptions = new SectionViewGroupCreationRangeOptions(group.ObjectId);
+    if (leftOffset.HasValue)
+    {
+      rangeOptions.SetOffsetRange(leftOffset.Value, rightOffset!.Value);
+    }
+    var placementOptions = new SectionViewGroupCreationPlacementOptions();
+    placementOptions.UseDraftPlacement();
+    var start = stationStart ?? alignment.StartingStation;
+    var end = stationEnd ?? alignment.EndingStation;
+    return group.SectionViewGroups.Add(insertionPoint, start, end, rangeOptions, placementOptions);
+  }
+
+  private static int ApplySectionViewStyles(
+    IReadOnlyList<SectionView> sectionViews,
+    ObjectId styleId,
+    ObjectId bandSetStyleId,
+    bool applyToAll)
+  {
+    int updated = 0;
+    var stylesToProcess = applyToAll ? sectionViews : sectionViews.Take(1);
+    foreach (var view in stylesToProcess)
+    {
+      if (!view.IsWriteEnabled)
+      {
+        view.UpgradeOpen();
+      }
+
+      var changed = false;
+      if (styleId != ObjectId.Null)
+      {
+        view.StyleId = styleId;
+        changed = true;
+      }
+
+      if (bandSetStyleId != ObjectId.Null)
+      {
+        view.Bands.ImportBandSetStyle(bandSetStyleId);
+        changed = true;
+      }
+
+      if (changed)
+      {
+        updated++;
+      }
+    }
+
+    return updated;
+  }
+
+  private static Dictionary<string, object?> MapSectionViewSummary(SectionView view, SampleLineGroup group, Alignment alignment)
+  {
+    return new Dictionary<string, object?>
+    {
+      ["alignmentName"] = alignment.Name,
+      ["sampleLineGroupName"] = group.Name,
+      ["name"] = view.Name,
+      ["handle"] = CivilObjectUtils.GetHandle(view),
+      ["style"] = view.StyleName,
+    };
+  }
+
 }

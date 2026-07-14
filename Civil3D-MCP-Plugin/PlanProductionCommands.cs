@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -75,20 +74,10 @@ public static class PlanProductionCommands
 
   public static Task<object?> CreateSheetSetAsync(JsonObject? parameters)
   {
-    var name = PluginRuntime.GetRequiredString(parameters, "name");
-    var description = PluginRuntime.GetOptionalString(parameters, "description");
-
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var sheetSet = CreateSheetSet(civilDoc, transaction, name, description);
-
-      return new Dictionary<string, object?>
-      {
-        ["name"] = GetName(sheetSet) ?? name,
-        ["handle"] = GetHandleString(sheetSet),
-        ["created"] = true,
-      };
-    });
+    _ = PluginRuntime.GetRequiredString(parameters, "name");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 does not document a managed sheet-set creation API. No sheet set was created; use Sheet Set Manager or a reviewed Autodesk Sheet Set API integration.");
   }
 
   // -------------------------------------------------------------------------
@@ -143,7 +132,9 @@ public static class PlanProductionCommands
   {
     var sheetSetName = PluginRuntime.GetRequiredString(parameters, "sheetSetName");
     var sheetName = PluginRuntime.GetRequiredString(parameters, "sheetName");
-    var titleBlockPath = PluginRuntime.GetRequiredString(parameters, "titleBlockPath");
+    var titleBlockPath = FileBoundary.ResolveImportPath(
+      PluginRuntime.GetRequiredString(parameters, "titleBlockPath"),
+      ".dwg", ".dwt");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -151,7 +142,12 @@ public static class PlanProductionCommands
       var sheet = FindSheetByName(sheetSet, transaction, sheetName);
 
       // Try setting TitleBlockPath, TitleBlock, TemplatePath on the sheet
-      TrySetStringProperty(sheet, titleBlockPath, "TitleBlockPath", "TitleBlock", "TemplatePath", "BlockPath");
+      if (!TrySetStringProperty(sheet, titleBlockPath, "TitleBlockPath", "TitleBlock", "TemplatePath", "BlockPath"))
+      {
+        throw new JsonRpcDispatchException(
+          "CIVIL3D.API_ERROR",
+          $"Sheet '{sheetName}' does not expose a writable title-block property. No update was made.");
+      }
 
       return new Dictionary<string, object?>
       {
@@ -168,42 +164,11 @@ public static class PlanProductionCommands
 
   public static Task<object?> CreatePlanProfileSheetAsync(JsonObject? parameters)
   {
-    var sheetSetName = PluginRuntime.GetRequiredString(parameters, "sheetSetName");
-    var alignmentName = PluginRuntime.GetRequiredString(parameters, "alignmentName");
-    var profileName = PluginRuntime.GetOptionalString(parameters, "profileName");
-    var sheetTemplatePath = PluginRuntime.GetOptionalString(parameters, "sheetTemplatePath");
-    var startStation = PluginRuntime.GetOptionalDouble(parameters, "startStation");
-    var endStation = PluginRuntime.GetOptionalDouble(parameters, "endStation");
-    var viewScale = PluginRuntime.GetOptionalDouble(parameters, "viewScale");
-
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var sheetSet = FindSheetSetByName(civilDoc, transaction, sheetSetName);
-      var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
-
-      // Try AeccPlanProductionHelper or direct sheet creation
-      var result = TryCreatePlanProfileSheetViaHelper(
-        civilDoc, transaction, sheetSet, alignment, profileName,
-        sheetTemplatePath, startStation, endStation, viewScale);
-
-      if (result == null)
-      {
-        // Fallback: add a sheet manually and associate alignment
-        var sheet = AddSheetToSet(sheetSet, transaction, $"{alignmentName} Plan", "1", null);
-        TrySetObjectIdPropertyOnObj(sheet, alignment.ObjectId, "AlignmentId", "ReferenceAlignmentId");
-
-        result = new Dictionary<string, object?>
-        {
-          ["sheetName"] = GetName(sheet) ?? $"{alignmentName} Plan",
-          ["handle"] = GetHandleString(sheet),
-          ["alignmentName"] = alignmentName,
-          ["profileName"] = profileName,
-          ["created"] = true,
-        };
-      }
-
-      return result;
-    });
+    _ = PluginRuntime.GetRequiredString(parameters, "sheetSetName");
+    _ = PluginRuntime.GetRequiredString(parameters, "alignmentName");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 does not document a managed plan/profile sheet factory. No sheet, view frame, or placeholder layout was created.");
   }
 
   // -------------------------------------------------------------------------
@@ -341,22 +306,13 @@ public static class PlanProductionCommands
     if (layoutNamesNode == null || layoutNamesNode.Count == 0)
       throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Parameter 'layoutNames' must be a non-empty array.");
 
-    var layoutNames = layoutNamesNode.Select(n => n?.GetValue<string>() ?? "").Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
-    var outputPath = PluginRuntime.GetRequiredString(parameters, "outputPath");
-    var plotStyleTable = PluginRuntime.GetOptionalString(parameters, "plotStyleTable");
-    var paperSize = PluginRuntime.GetOptionalString(parameters, "paperSize");
-
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var published = PlotLayoutsToPdf(doc, database, transaction, layoutNames, outputPath, plotStyleTable, paperSize);
-
-      return new Dictionary<string, object?>
-      {
-        ["outputPath"] = outputPath,
-        ["sheetsPublished"] = published,
-        ["published"] = published > 0,
-      };
-    });
+    _ = FileBoundary.ResolveExportPath(
+      PluginRuntime.GetRequiredString(parameters, "outputPath"),
+      PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false,
+      ".pdf");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "PDF publishing requires a complete AutoCAD PlotEngine transaction and completion verification. The previous asynchronous PUBLISH fallback could report success before output existed, so no publish was started.");
   }
 
   // -------------------------------------------------------------------------
@@ -365,35 +321,14 @@ public static class PlanProductionCommands
 
   public static Task<object?> ExportSheetSetAsync(JsonObject? parameters)
   {
-    var sheetSetName = PluginRuntime.GetRequiredString(parameters, "sheetSetName");
-    var outputPath = PluginRuntime.GetRequiredString(parameters, "outputPath");
-    var plotStyleTable = PluginRuntime.GetOptionalString(parameters, "plotStyleTable");
-
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var sheetSet = FindSheetSetByName(civilDoc, transaction, sheetSetName);
-
-      // Collect layout names from all sheets in the set
-      var layoutNames = GetSheetIds(sheetSet, transaction)
-        .Select(id => transaction.GetObject(id, OpenMode.ForRead))
-        .Select(s => GetAnyString(s, "LayoutName", "Layout") ?? GetName(s))
-        .Where(n => !string.IsNullOrWhiteSpace(n))
-        .Select(n => n!)
-        .ToList();
-
-      if (layoutNames.Count == 0)
-        throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Sheet set '{sheetSetName}' has no sheets with associated layouts.");
-
-      var published = PlotLayoutsToPdf(doc, database, transaction, layoutNames, outputPath, plotStyleTable, null);
-
-      return new Dictionary<string, object?>
-      {
-        ["sheetSetName"] = sheetSetName,
-        ["outputPath"] = outputPath,
-        ["sheetsExported"] = published,
-        ["exported"] = published > 0,
-      };
-    });
+    _ = PluginRuntime.GetRequiredString(parameters, "sheetSetName");
+    _ = FileBoundary.ResolveExportPath(
+      PluginRuntime.GetRequiredString(parameters, "outputPath"),
+      PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false,
+      ".pdf", ".dwf", ".dwfx", ".dst");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Sheet-set PDF export is unavailable until a typed AutoCAD PlotEngine workflow with output verification is implemented. No export was started.");
   }
 
   // =========================================================================
@@ -508,93 +443,6 @@ public static class PlanProductionCommands
     throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Sheet '{name}' was not found.");
   }
 
-  private static DBObject CreateSheetSet(
-    Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
-    Transaction transaction,
-    string name,
-    string? description)
-  {
-    // Try static Create method on AeccSheetSet (found via reflection)
-    var aeccAssembly = AppDomain.CurrentDomain.GetAssemblies()
-      .FirstOrDefault(a => a.GetName().Name?.Contains("AeccDbMgd") == true
-                        || a.GetName().Name?.Contains("AeccDb") == true);
-
-    if (aeccAssembly != null)
-    {
-      foreach (var typeName in new[] { "AeccSheetSet", "Autodesk.Civil.DatabaseServices.AeccSheetSet" })
-      {
-        var type = aeccAssembly.GetType(typeName, throwOnError: false, ignoreCase: true);
-        if (type == null) continue;
-
-        // Try Create(civilDoc, name) factory
-        var createMethod = type.GetMethod("Create", BindingFlags.Public | BindingFlags.Static);
-        if (createMethod != null)
-        {
-          try
-          {
-            var result = createMethod.Invoke(null, new object?[] { civilDoc, name });
-            if (result is DBObject createdSheetSet)
-            {
-              if (!string.IsNullOrWhiteSpace(description))
-                TrySetStringProperty(createdSheetSet, description!, "Description", "Desc");
-              return createdSheetSet;
-            }
-            if (result is ObjectId oid && oid != ObjectId.Null)
-            {
-              var createdSheetSetObject = transaction.GetObject(oid, OpenMode.ForWrite);
-              if (!string.IsNullOrWhiteSpace(description))
-                TrySetStringProperty(createdSheetSetObject, description!, "Description", "Desc");
-              return createdSheetSetObject;
-            }
-          }
-          catch (Exception ex)
-          {
-            PluginLog.Swallow("PlanProduction", "createSheetSet via factory method", ex);
-          }
-        }
-
-        // Try constructor + Add to collection
-        try
-        {
-          var instance = Activator.CreateInstance(type, new object?[] { name });
-          if (instance is DBObject dbSheetSet)
-          {
-            var collection = GetNamedMember(civilDoc, "SheetSets") ?? GetNamedMember(civilDoc, "SheetSetCollection");
-            CivilObjectUtils.InvokeMethod(collection, "Add", instance);
-            if (!string.IsNullOrWhiteSpace(description))
-              TrySetStringProperty(dbSheetSet, description!, "Description", "Desc");
-            return dbSheetSet;
-          }
-        }
-        catch (Exception ex)
-        {
-          PluginLog.Swallow("PlanProduction", "createSheetSet via constructor", ex);
-        }
-      }
-    }
-
-    // Fallback: store as a plain DBDictionary entry keyed under "CIVIL3D_SHEET_SETS"
-    var db = CivilObjectUtils.GetDatabase(civilDoc);
-    var nod = (DBDictionary)transaction.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForWrite);
-
-    DBDictionary sheetSetsDict;
-    if (nod.Contains("CIVIL3D_SHEET_SETS"))
-    {
-      sheetSetsDict = (DBDictionary)transaction.GetObject(nod.GetAt("CIVIL3D_SHEET_SETS"), OpenMode.ForWrite);
-    }
-    else
-    {
-      sheetSetsDict = new DBDictionary();
-      nod.SetAt("CIVIL3D_SHEET_SETS", sheetSetsDict);
-      transaction.AddNewlyCreatedDBObject(sheetSetsDict, true);
-    }
-
-    var dict = new DBDictionary();
-    sheetSetsDict.SetAt(name, dict);
-    transaction.AddNewlyCreatedDBObject(dict, true);
-    return dict;
-  }
-
   private static DBObject AddSheetToSet(
     DBObject sheetSet,
     Transaction transaction,
@@ -612,17 +460,9 @@ public static class PlanProductionCommands
     if (addResult is ObjectId addedId && addedId != ObjectId.Null)
       return transaction.GetObject(addedId, OpenMode.ForRead);
 
-    // Fallback: add a sub-dictionary entry to simulate a sheet
-    if (sheetSet is DBDictionary dict)
-    {
-      dict.UpgradeOpen();
-      var sheetEntry = new DBDictionary();
-      dict.SetAt(sheetName, sheetEntry);
-      transaction.AddNewlyCreatedDBObject(sheetEntry, true);
-      return sheetEntry;
-    }
-
-    throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"Could not add sheet '{sheetName}' to sheet set.");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      $"Civil 3D could not add sheet '{sheetName}' to the sheet set. No simulated sheet was created.");
   }
 
   private static Dictionary<string, object?> ToSheetSetSummary(DBObject sheetSet, Transaction transaction)
@@ -692,66 +532,6 @@ public static class PlanProductionCommands
     };
   }
 
-  private static Dictionary<string, object?>? TryCreatePlanProfileSheetViaHelper(
-    Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
-    Transaction transaction,
-    DBObject sheetSet,
-    Autodesk.Civil.DatabaseServices.Alignment alignment,
-    string? profileName,
-    string? sheetTemplatePath,
-    double? startStation,
-    double? endStation,
-    double? viewScale)
-  {
-    var aeccAssembly = AppDomain.CurrentDomain.GetAssemblies()
-      .FirstOrDefault(a => a.GetName().Name?.Contains("AeccDbMgd") == true
-                        || a.GetName().Name?.Contains("AeccDb") == true);
-
-    if (aeccAssembly == null) return null;
-
-    foreach (var typeName in new[]
-    {
-      "AeccPlanProductionHelper",
-      "Autodesk.Civil.ApplicationServices.AeccPlanProductionHelper",
-      "Autodesk.Civil.DatabaseServices.AeccPlanProductionHelper",
-    })
-    {
-      var type = aeccAssembly.GetType(typeName, throwOnError: false, ignoreCase: true);
-      if (type == null) continue;
-
-      // Try CreatePlanProfileSheets or CreateSheet methods
-      foreach (var methodName in new[] { "CreatePlanProfileSheets", "CreateSheet", "CreateSheetsFromAlignment" })
-      {
-        var method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
-        if (method == null) continue;
-
-        try
-        {
-          // Build args — vary by overload
-          object?[] args = new object?[] { civilDoc, alignment.ObjectId, sheetSet.ObjectId };
-          var result = method.Invoke(null, args);
-
-          var createdSheetId = result is ObjectId oid ? oid : ExtractObjectId(result);
-          var sheetObj = createdSheetId != ObjectId.Null
-            ? transaction.GetObject(createdSheetId, OpenMode.ForRead)
-            : null;
-
-          return new Dictionary<string, object?>
-          {
-            ["sheetName"] = (sheetObj != null ? GetName(sheetObj) : null) ?? $"{alignment.Name} Plan/Profile",
-            ["handle"] = sheetObj != null ? GetHandleString(sheetObj) : "",
-            ["alignmentName"] = alignment.Name,
-            ["profileName"] = profileName,
-            ["created"] = true,
-          };
-        }
-        catch (Exception ex) { PluginLog.Swallow("PlanProduction", "create plan/profile sheet", ex); }
-      }
-    }
-
-    return null;
-  }
-
   private static Layout FindLayoutByName(Autodesk.AutoCAD.DatabaseServices.Database database, Transaction transaction, string layoutName)
   {
     var layoutDict = (DBDictionary)transaction.GetObject(database.LayoutDictionaryId, OpenMode.ForRead);
@@ -805,135 +585,6 @@ public static class PlanProductionCommands
     var viewRecord = (ViewTableRecord)transaction.GetObject(viewTable[viewName], OpenMode.ForRead);
     viewport.ViewCenter = new Point2d(viewRecord.CenterPoint.X, viewRecord.CenterPoint.Y);
     viewport.ViewHeight = viewRecord.Height;
-  }
-
-  private static int PlotLayoutsToPdf(
-    Document doc,
-    Autodesk.AutoCAD.DatabaseServices.Database database,
-    Transaction transaction,
-    IList<string> layoutNames,
-    string outputPath,
-    string? plotStyleTable,
-    string? paperSize)
-  {
-    // Ensure output directory exists
-    var outputDir = System.IO.Path.GetDirectoryName(outputPath);
-    if (!string.IsNullOrWhiteSpace(outputDir) && !System.IO.Directory.Exists(outputDir))
-      System.IO.Directory.CreateDirectory(outputDir!);
-
-    int published = 0;
-
-    // Try via Autodesk.AutoCAD.PlottingServices reflection
-    var plotAssembly = AppDomain.CurrentDomain.GetAssemblies()
-      .FirstOrDefault(a => a.GetName().Name?.Contains("AcMgd") == true
-                        || a.GetName().Name?.Contains("acmgd") == true
-                        || a.GetName().Name?.Contains("AutoCAD") == true);
-
-    if (plotAssembly != null)
-    {
-      try
-      {
-        published = PlotViaPlottingServices(plotAssembly, doc, database, transaction, layoutNames, outputPath, plotStyleTable, paperSize);
-        if (published > 0) return published;
-      }
-      catch (Exception ex) { PluginLog.Swallow("PlanProduction", "publish via PlottingServices", ex); }
-    }
-
-    // Fallback: use AutoCAD PUBLISH command via UI bindings
-    try
-    {
-      // Build a simple DSD (Draw Set Description) string and call PUBLISH
-      var dsdContent = BuildDsdContent(database, transaction, layoutNames, outputPath, plotStyleTable);
-      var dsdPath = System.IO.Path.ChangeExtension(outputPath, ".dsd");
-      System.IO.File.WriteAllText(dsdPath, dsdContent);
-      doc.SendStringToExecute($"PUBLISH \"{dsdPath}\" ", true, false, true);
-      published = layoutNames.Count;
-    }
-    catch (Exception ex)
-    {
-      throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"PDF publishing failed: {ex.Message}");
-    }
-
-    return published;
-  }
-
-  private static int PlotViaPlottingServices(
-    System.Reflection.Assembly plotAssembly,
-    Document doc,
-    Autodesk.AutoCAD.DatabaseServices.Database database,
-    Transaction transaction,
-    IList<string> layoutNames,
-    string outputPath,
-    string? plotStyleTable,
-    string? paperSize)
-  {
-    var plotInfoType = plotAssembly.GetType("Autodesk.AutoCAD.PlottingServices.PlotInfo", false, true);
-    var plotEngineType = plotAssembly.GetType("Autodesk.AutoCAD.PlottingServices.PlotEngine", false, true);
-    var plotSettingsValidatorType = plotAssembly.GetType("Autodesk.AutoCAD.PlottingServices.PlotSettingsValidator", false, true);
-
-    if (plotInfoType == null || plotEngineType == null) return 0;
-
-    // Get PlotEngine instance
-    var getPlotEngineMethod = plotEngineType.GetMethod("GetPlotEngine",
-      BindingFlags.Public | BindingFlags.Static);
-    if (getPlotEngineMethod == null) return 0;
-
-    var plotEngine = getPlotEngineMethod.Invoke(null, null);
-    if (plotEngine == null) return 0;
-
-    var beginDocumentMethod = plotEngineType.GetMethod("BeginDocument",
-      BindingFlags.Public | BindingFlags.Instance);
-    var endDocumentMethod = plotEngineType.GetMethod("EndDocument",
-      BindingFlags.Public | BindingFlags.Instance);
-    var beginPageMethod = plotEngineType.GetMethod("BeginPage",
-      BindingFlags.Public | BindingFlags.Instance);
-    var endPageMethod = plotEngineType.GetMethod("EndPage",
-      BindingFlags.Public | BindingFlags.Instance);
-    var plotPageMethod = plotEngineType.GetMethod("PlotPage",
-      BindingFlags.Public | BindingFlags.Instance);
-
-    if (beginDocumentMethod == null || endDocumentMethod == null) return 0;
-
-    int count = 0;
-    foreach (var layoutName in layoutNames)
-    {
-      try
-      {
-        var layout = FindLayoutByName(database, transaction, layoutName);
-        var plotInfo = Activator.CreateInstance(plotInfoType);
-        if (plotInfo == null) continue;
-
-        // Set layout on PlotInfo
-        var layoutProp = plotInfoType.GetProperty("Layout");
-        layoutProp?.SetValue(plotInfo, layout.ObjectId);
-
-        // Copy PlotSettings from layout
-        var copyFromProp = plotInfoType.GetMethod("OverrideSettings", BindingFlags.Public | BindingFlags.Instance);
-
-        // Plot to file
-        var plotSettingsProp = plotInfoType.GetProperty("ValidatedSettings")
-          ?? plotInfoType.GetProperty("EffectivePlotSettings");
-        var settings = plotSettingsProp?.GetValue(plotInfo);
-
-        if (settings is PlotSettings ps)
-        {
-          ps.UpgradeOpen();
-          var validator = PlotSettingsValidator.Current;
-          TryInvokeIfPresent(validator, "SetPlotFileName", ps, outputPath);
-          TryInvokeIfPresent(validator, "SetPlotToFile", ps, true);
-          if (!string.IsNullOrWhiteSpace(plotStyleTable))
-            validator.SetCurrentStyleSheet(ps, plotStyleTable!);
-          if (!string.IsNullOrWhiteSpace(paperSize))
-            validator.SetCanonicalMediaName(ps, paperSize!);
-          validator.SetPlotConfigurationName(ps, "DWG To PDF.pc3", "ISO_full_bleed_A1_(841.00_x_594.00_MM)");
-        }
-
-        count++;
-      }
-      catch (Exception ex) { PluginLog.Swallow("PlanProduction", "plot single layout", ex); }
-    }
-
-    return count;
   }
 
   private static string BuildDsdContent(
@@ -999,11 +650,8 @@ public static class PlanProductionCommands
 
   private static object? GetNamedMember(object? value, string memberName)
   {
-    if (value == null) return null;
-    var prop = value.GetType().GetProperty(memberName, BindingFlags.Public | BindingFlags.Instance);
-    if (prop != null) return prop.GetValue(value);
-    var field = value.GetType().GetField(memberName, BindingFlags.Public | BindingFlags.Instance);
-    return field?.GetValue(value);
+    return Civil3DCompatibility.GetPropertyValue(value, memberName)
+      ?? Civil3DCompatibility.GetFieldValue(value, memberName);
   }
 
   private static IEnumerable<object> EnumerateObjects(object? collection)
@@ -1013,14 +661,14 @@ public static class PlanProductionCommands
         if (item != null) yield return item;
   }
 
-  private static void TrySetStringProperty(object target, string value, params string[] propertyNames)
+  private static bool TrySetStringProperty(object target, string value, params string[] propertyNames)
   {
     foreach (var name in propertyNames)
     {
-      var prop = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-      if (prop == null || !prop.CanWrite || prop.PropertyType != typeof(string)) continue;
-      try { prop.SetValue(target, value); return; } catch (Exception ex) { PluginLog.Swallow("PlanProduction", $"set string property '{name}'", ex); }
+      if (Civil3DCompatibility.TrySetProperty(target, name, value)) return true;
     }
+
+    return false;
   }
 
   private static void TrySetObjectIdPropertyOnObj(object target, ObjectId objectId, params string[] propertyNames)
@@ -1028,9 +676,7 @@ public static class PlanProductionCommands
     if (objectId == ObjectId.Null) return;
     foreach (var name in propertyNames)
     {
-      var prop = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-      if (prop == null || !prop.CanWrite || prop.PropertyType != typeof(ObjectId)) continue;
-      try { prop.SetValue(target, objectId); return; } catch (Exception ex) { PluginLog.Swallow("PlanProduction", $"set ObjectId property '{name}'", ex); }
+      if (Civil3DCompatibility.TrySetProperty(target, name, objectId)) return;
     }
   }
 
@@ -1054,20 +700,6 @@ public static class PlanProductionCommands
 
   private static void TryInvokeIfPresent(object target, string methodName, params object?[] args)
   {
-    var methods = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
-      .Where(method => method.Name == methodName && method.GetParameters().Length == args.Length);
-
-    foreach (var method in methods)
-    {
-      try
-      {
-        method.Invoke(target, args);
-        return;
-      }
-      catch (Exception ex)
-      {
-        PluginLog.Swallow("PlanProduction", "invoke reflected method", ex);
-      }
-    }
+    Civil3DCompatibility.TryInvokeMethod(target, methodName, out _, args);
   }
 }

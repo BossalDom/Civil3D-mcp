@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.Civil.Settings;
 
 namespace Civil3DMcpPlugin;
 
@@ -22,35 +23,18 @@ public static class CoordinateSystemCommands
   {
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      // Access coordinate system info from drawing settings
-      var settings = CivilObjectUtils.GetPropertyValue<object>(civilDoc, "Settings");
-      var drawingSettings = CivilObjectUtils.GetPropertyValue<object>(settings, "DrawingSettings");
-      var unitZone = CivilObjectUtils.GetPropertyValue<object>(drawingSettings, "UnitZoneSettings");
-
-      string? csCode = null;
+      var unitZone = civilDoc.Settings.DrawingSettings.UnitZoneSettings;
+      var csCode = unitZone.CoordinateSystemCode;
       string? zone = null;
       string? datum = null;
       string? projection = null;
-      double? centralMeridian = null;
-      double? falseEasting = null;
-      double? falseNorthing = null;
-      double? scaleFactor = null;
 
-      if (unitZone != null)
+      if (!string.IsNullOrWhiteSpace(csCode))
       {
-        csCode = CivilObjectUtils.GetStringProperty(unitZone, "CoordinateSystemCode")
-          ?? CivilObjectUtils.GetStringProperty(unitZone, "CsCode")
-          ?? CivilObjectUtils.GetStringProperty(unitZone, "ZoneCode");
-        zone = CivilObjectUtils.GetStringProperty(unitZone, "Zone")
-          ?? CivilObjectUtils.GetStringProperty(unitZone, "ZoneName");
-        datum = CivilObjectUtils.GetStringProperty(unitZone, "Datum")
-          ?? CivilObjectUtils.GetStringProperty(unitZone, "DatumName");
-        projection = CivilObjectUtils.GetStringProperty(unitZone, "Projection")
-          ?? CivilObjectUtils.GetStringProperty(unitZone, "ProjectionName");
-        centralMeridian = CivilObjectUtils.GetDoubleProperty(unitZone, "CentralMeridian");
-        falseEasting = CivilObjectUtils.GetDoubleProperty(unitZone, "FalseEasting");
-        falseNorthing = CivilObjectUtils.GetDoubleProperty(unitZone, "FalseNorthing");
-        scaleFactor = CivilObjectUtils.GetDoubleProperty(unitZone, "ScaleFactor");
+        var coordinateSystem = SettingsUnitZone.GetCoordinateSystemByCode(csCode);
+        zone = coordinateSystem.Category;
+        datum = coordinateSystem.Datum;
+        projection = coordinateSystem.Projection;
       }
 
       return new Dictionary<string, object?>
@@ -60,10 +44,10 @@ public static class CoordinateSystemCommands
         ["datum"] = datum,
         ["projection"] = projection,
         ["linearUnits"] = CivilObjectUtils.LinearUnits(database),
-        ["centralMeridian"] = centralMeridian,
-        ["falseEasting"] = falseEasting,
-        ["falseNorthing"] = falseNorthing,
-        ["scaleFactor"] = scaleFactor,
+        ["centralMeridian"] = null,
+        ["falseEasting"] = null,
+        ["falseNorthing"] = null,
+        ["scaleFactor"] = null,
       };
     });
   }
@@ -84,9 +68,18 @@ public static class CoordinateSystemCommands
     {
       // Civil 3D coordinate transformation via drawing's geographic transform
       // Try to access via reflection since the exact API type varies by version
-      var outX = x;
-      var outY = y;
-      var outZ = z;
+      if (string.Equals(fromSystem, toSystem, StringComparison.OrdinalIgnoreCase))
+      {
+        return new Dictionary<string, object?>
+        {
+          ["x"] = x,
+          ["y"] = y,
+          ["z"] = z,
+          ["fromSystem"] = fromSystem,
+          ["toSystem"] = toSystem,
+          ["identityTransform"] = true,
+        };
+      }
 
       try
       {
@@ -94,60 +87,73 @@ public static class CoordinateSystemCommands
         // The API varies: some versions use CivilDocument.GetCoordinateTransformInfo()
         // or Autodesk.Civil.CoordinateTransformer
         var transformerType = FindCoordinateTransformerType();
-        if (transformerType != null)
+        if (transformerType == null)
         {
-          var methods = transformerType.GetMethods(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-          var toGeo = methods.FirstOrDefault(m => m.Name.Contains("ToGeographic") || m.Name.Contains("DrawingToGeographic"));
-          var toDwg = methods.FirstOrDefault(m => m.Name.Contains("ToDrawing") || m.Name.Contains("GeographicToDrawing"));
+          throw new JsonRpcDispatchException(
+            "CIVIL3D.API_ERROR",
+            "This Civil 3D installation does not expose a compatible coordinate-transform service. No coordinates were returned.");
+        }
 
-          if (fromSystem == "drawing" && toSystem == "geographic" && toGeo != null)
+        var methodNames = fromSystem == "drawing" && toSystem == "geographic"
+          ? new[] { "ToGeographic", "DrawingToGeographic" }
+          : fromSystem == "geographic" && toSystem == "drawing"
+            ? new[] { "ToDrawing", "GeographicToDrawing" }
+            : Array.Empty<string>();
+
+        if (methodNames.Length == 0)
+        {
+          throw new JsonRpcDispatchException(
+            "CIVIL3D.API_ERROR",
+            $"Coordinate transform '{fromSystem}' to '{toSystem}' is not supported. No coordinates were returned.");
+        }
+
+        object? result = null;
+        foreach (var methodName in methodNames)
+        {
+          result = Civil3DCompatibility.InvokeStaticMethod(transformerType, methodName, x, y, z)
+            ?? Civil3DCompatibility.InvokeStaticMethod(transformerType, methodName, x, y);
+          if (result != null)
           {
-            var args = toGeo.GetParameters().Length == 3
-              ? new object[] { x, y, z }
-              : new object[] { x, y };
-            var result = toGeo.Invoke(null, args);
-            if (result != null)
-            {
-              outX = CivilObjectUtils.GetDoubleProperty(result, "X") ?? outX;
-              outY = CivilObjectUtils.GetDoubleProperty(result, "Y") ?? outY;
-              outZ = CivilObjectUtils.GetDoubleProperty(result, "Z") ?? outZ;
-            }
-          }
-          else if (fromSystem == "geographic" && toSystem == "drawing" && toDwg != null)
-          {
-            var args = toDwg.GetParameters().Length == 3
-              ? new object[] { x, y, z }
-              : new object[] { x, y };
-            var result = toDwg.Invoke(null, args);
-            if (result != null)
-            {
-              outX = CivilObjectUtils.GetDoubleProperty(result, "X") ?? outX;
-              outY = CivilObjectUtils.GetDoubleProperty(result, "Y") ?? outY;
-              outZ = CivilObjectUtils.GetDoubleProperty(result, "Z") ?? outZ;
-            }
+            break;
           }
         }
-      }
-      catch
-      {
-        // If the transformer is unavailable, return input coordinates with a note
+
+        if (result == null)
+        {
+          throw new JsonRpcDispatchException(
+            "CIVIL3D.API_ERROR",
+            "The coordinate transformer returned no result. No coordinates were returned.");
+        }
+
+        var outX = CivilObjectUtils.GetDoubleProperty(result, "X");
+        var outY = CivilObjectUtils.GetDoubleProperty(result, "Y");
+        var outZ = CivilObjectUtils.GetDoubleProperty(result, "Z") ?? z;
+        if (outX == null || outY == null)
+        {
+          throw new JsonRpcDispatchException(
+            "CIVIL3D.API_ERROR",
+            "The coordinate transformer returned an unsupported result type. No coordinates were returned.");
+        }
+
         return new Dictionary<string, object?>
         {
-          ["x"] = x,
-          ["y"] = y,
-          ["z"] = z,
-          ["note"] = "Coordinate transformation is not available in this drawing (no coordinate system assigned or transformer API unavailable).",
+          ["x"] = outX.Value,
+          ["y"] = outY.Value,
+          ["z"] = outZ,
+          ["fromSystem"] = fromSystem,
+          ["toSystem"] = toSystem,
         };
       }
-
-      return new Dictionary<string, object?>
+      catch (JsonRpcDispatchException)
       {
-        ["x"] = outX,
-        ["y"] = outY,
-        ["z"] = outZ,
-        ["fromSystem"] = fromSystem,
-        ["toSystem"] = toSystem,
-      };
+        throw;
+      }
+      catch (Exception exception)
+      {
+        throw new JsonRpcDispatchException(
+          "CIVIL3D.API_ERROR",
+          $"Coordinate transformation failed: {exception.Message}. No coordinates were returned.");
+      }
     });
   }
 
@@ -157,12 +163,8 @@ public static class CoordinateSystemCommands
 
   private static Type? FindCoordinateTransformerType()
   {
-    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-    {
-      var t = asm.GetType("Autodesk.Civil.CoordinateTransformer")
-        ?? asm.GetType("Autodesk.CSMAP.CsMapCoordinateSystem");
-      if (t != null) return t;
-    }
-    return null;
+    return Civil3DCompatibility.FindLoadedType(
+      "Autodesk.Civil.CoordinateTransformer",
+      "Autodesk.CSMAP.CsMapCoordinateSystem");
   }
 }

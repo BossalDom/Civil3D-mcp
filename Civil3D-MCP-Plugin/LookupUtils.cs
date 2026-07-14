@@ -89,6 +89,35 @@ public static class LookupUtils
       : ObjectId.Null;
   }
 
+  public static ObjectId GetParcelStyleId(CivilDocument civilDoc, Transaction transaction, string? styleName)
+  {
+    return GetStyleId(civilDoc.Styles.ParcelStyles, transaction, styleName);
+  }
+
+  public static ObjectId GetParcelAreaLabelStyleId(CivilDocument civilDoc, Transaction transaction, string? styleName)
+  {
+    return GetStyleId(civilDoc.Styles.LabelStyles.ParcelLabelStyles.AreaLabelStyles, transaction, styleName);
+  }
+
+  public static ObjectId GetSectionViewStyleId(CivilDocument civilDoc, Transaction transaction, string? styleName)
+  {
+    return GetStyleId(civilDoc.Styles.SectionViewStyles, transaction, styleName);
+  }
+
+  public static ObjectId GetSectionViewBandSetId(CivilDocument civilDoc, Transaction transaction, string? bandSetName)
+  {
+    return string.IsNullOrWhiteSpace(bandSetName)
+      ? ObjectId.Null
+      : GetStyleId(civilDoc.Styles.SectionViewBandSetStyles, transaction, bandSetName);
+  }
+
+  public static ObjectId GetGroupPlotStyleId(CivilDocument civilDoc, Transaction transaction, string? styleName)
+  {
+    return string.IsNullOrWhiteSpace(styleName)
+      ? ObjectId.Null
+      : GetStyleId(civilDoc.Styles.GroupPlotStyles, transaction, styleName);
+  }
+
   public static string? GetFirstStyleName(object? collection, Transaction transaction)
   {
     foreach (var objectId in EnumerateObjectIds(collection))

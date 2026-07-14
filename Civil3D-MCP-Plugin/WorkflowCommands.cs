@@ -14,6 +14,7 @@ public static class WorkflowCommands
     var includePipeNetworks = PluginRuntime.GetOptionalBool(parameters, "includePipeNetworks") ?? false;
     var includeSurfaces = PluginRuntime.GetOptionalBool(parameters, "includeSurfaces") ?? false;
     var includeLabels = PluginRuntime.GetOptionalBool(parameters, "includeLabels") ?? false;
+    var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
 
     var corridorCheck = await RequireDictionary(
       QcCommands.QcCheckCorridorAsync(new JsonObject { ["name"] = corridorName }),
@@ -32,6 +33,7 @@ public static class WorkflowCommands
         QcCommands.QcReportGenerateAsync(new JsonObject
         {
           ["outputPath"] = outputPath,
+          ["overwrite"] = overwrite,
           ["includeAlignments"] = includeAlignments,
           ["includeProfiles"] = includeProfiles,
           ["includeCorridors"] = true,
@@ -200,6 +202,7 @@ public static class WorkflowCommands
   {
     var templatePath = PluginRuntime.GetOptionalString(parameters, "templatePath");
     var saveAs = PluginRuntime.GetOptionalString(parameters, "saveAs");
+    var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
 
     var healthResult = await RequireDictionary(DrawingCommands.GetCivil3DHealthAsync(), "getCivil3DHealth");
     var steps = new List<Dictionary<string, object?>>
@@ -271,6 +274,7 @@ public static class WorkflowCommands
 
     var dryRun = PluginRuntime.GetOptionalBool(parameters, "dryRun") ?? false;
     var saveAs = PluginRuntime.GetOptionalString(parameters, "saveAs");
+    var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
     var referenceResults = new List<object?>();
     var steps = new List<Dictionary<string, object?>>();
     var shortcutNames = new List<string>();
@@ -316,7 +320,7 @@ public static class WorkflowCommands
     if (!string.IsNullOrWhiteSpace(saveAs))
     {
       saveResult = await RequireDictionary(
-        DrawingCommands.SaveDrawingAsync(new JsonObject { ["saveAs"] = saveAs }),
+        DrawingCommands.SaveDrawingAsync(new JsonObject { ["saveAs"] = saveAs, ["overwrite"] = overwrite }),
         "saveDrawing");
       steps.Add(WorkflowStep("Save drawing after reference setup", "drawing.save", "completed", saveResult));
     }

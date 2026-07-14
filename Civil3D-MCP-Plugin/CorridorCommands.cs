@@ -1,6 +1,6 @@
-using System.Collections;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.Civil.ApplicationServices;
 using Autodesk.Civil.DatabaseServices;
 
 namespace Civil3DMcpPlugin;
@@ -192,7 +192,17 @@ public static class CorridorCommands
 
   public static Task<object?> ComputeCorridorVolumesAsync(JsonObject? parameters)
   {
-    throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "computeCorridorVolumes is not implemented in the initial C# plugin build yet.");
+    var name = PluginRuntime.GetRequiredString(parameters, "name");
+    var corridorSurfaceName = PluginRuntime.GetRequiredString(parameters, "corridorSurface");
+    var referenceSurfaceName = PluginRuntime.GetRequiredString(parameters, "referenceSurface");
+
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, name, OpenMode.ForRead);
+      var corridorSurface = FindCorridorSurfaceByName(corridor, corridorSurfaceName, transaction);
+      var referenceSurface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, referenceSurfaceName, OpenMode.ForRead);
+      return ComputeVolumeBetweenSurfaces(database, transaction, corridorSurface, referenceSurface);
+    });
   }
 
   private static Dictionary<string, object?> ToCorridorSummary(Corridor corridor)
@@ -211,90 +221,64 @@ public static class CorridorCommands
 
   private static List<Dictionary<string, object?>> ReadCorridorSurfaces(Corridor corridor, Transaction? transaction)
   {
-    var result = new List<Dictionary<string, object?>>();
-    foreach (var propertyName in new[] { "CorridorSurfaces", "Surfaces" })
-    {
-      if (CivilObjectUtils.GetPropertyValue<object>(corridor, propertyName) is not IEnumerable enumerable)
+    var corridorSurfaces = corridor.CorridorSurfaces;
+    return corridorSurfaces.Cast<CorridorSurface>()
+      .Select(surface => new Dictionary<string, object?>
       {
-        continue;
-      }
-
-      foreach (var item in enumerable)
-      {
-        result.Add(new Dictionary<string, object?>
-        {
-          ["name"] = CivilObjectUtils.GetName(item) ?? string.Empty,
-          ["boundaries"] = ReadBoundaryNames(item, transaction),
-        });
-      }
-
-      if (result.Count > 0)
-      {
-        break;
-      }
-    }
-
-    return result;
+        ["name"] = surface.Name,
+        ["surfaceId"] = surface.SurfaceId == ObjectId.Null ? null : surface.SurfaceId.Handle.ToString(),
+        ["boundaries"] = surface.Boundaries.Cast<CorridorSurfaceBoundary>().Select(boundary => boundary.Name).ToList(),
+      })
+      .ToList();
   }
 
   private static List<Dictionary<string, object?>> ReadCorridorFeatureLines(Corridor corridor)
   {
-    var features = new List<Dictionary<string, object?>>();
-    foreach (var propertyName in new[] { "FeatureLines", "CodeNameToFeatureLineMap" })
-    {
-      if (CivilObjectUtils.GetPropertyValue<object>(corridor, propertyName) is not IEnumerable enumerable)
+    var featureLines = corridor.FeatureLineCodeInfos;
+    return featureLines.Cast<FeatureLineCodeInfo>()
+      .Select(feature => new Dictionary<string, object?>
       {
-        continue;
-      }
-
-      foreach (var item in enumerable)
-      {
-        features.Add(new Dictionary<string, object?>
-        {
-          ["name"] = CivilObjectUtils.GetName(item) ?? item?.ToString(),
-        });
-      }
-
-      if (features.Count > 0)
-      {
-        break;
-      }
-    }
-
-    return features;
+        ["name"] = feature.CodeName,
+      })
+      .ToList();
   }
 
-  private static List<string> ReadBoundaryNames(object? surface, Transaction? transaction)
+  private static string GetCorridorState(Corridor corridor) => corridor.IsOutOfDate ? "out_of_date" : "built";
+
+  private static Autodesk.Civil.DatabaseServices.Surface FindCorridorSurfaceByName(Corridor corridor, string name, Transaction transaction)
   {
-    var names = new List<string>();
-    if (surface == null)
+    var definition = corridor.CorridorSurfaces.Cast<CorridorSurface>()
+      .FirstOrDefault(surface => string.Equals(surface.Name, name, StringComparison.OrdinalIgnoreCase))
+      ?? throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Corridor surface '{name}' was not found on corridor '{corridor.Name}'.");
+
+    if (definition.SurfaceId == ObjectId.Null)
     {
-      return names;
+      throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", $"Corridor surface '{name}' has no built Civil 3D surface ObjectId.");
     }
 
-    var boundaries = CivilObjectUtils.GetPropertyValue<object>(surface, "Boundaries") as IEnumerable;
-    if (boundaries == null)
-    {
-      return names;
-    }
-
-    foreach (var boundary in boundaries)
-    {
-      names.Add(CivilObjectUtils.GetName(boundary) ?? boundary?.ToString() ?? string.Empty);
-    }
-
-    return names;
+    return CivilObjectUtils.GetRequiredObject<Autodesk.Civil.DatabaseServices.Surface>(transaction, definition.SurfaceId, OpenMode.ForRead);
   }
 
-  private static string GetCorridorState(Corridor corridor)
+  private static Dictionary<string, object?> ComputeVolumeBetweenSurfaces(
+    Database database,
+    Transaction transaction,
+    Autodesk.Civil.DatabaseServices.Surface baseSurface,
+    Autodesk.Civil.DatabaseServices.Surface comparisonSurface)
   {
-    var isOutOfDate = CivilObjectUtils.GetPropertyValue<bool?>(corridor, "IsOutOfDate") ?? false;
-    if (isOutOfDate)
+    var temporaryName = $"MCP_TMP_CORRIDOR_VOLUME_{Guid.NewGuid():N}";
+    var volumeSurfaceId = TinVolumeSurface.Create(temporaryName, baseSurface.ObjectId, comparisonSurface.ObjectId);
+    var volumeSurface = CivilObjectUtils.GetRequiredObject<TinVolumeSurface>(transaction, volumeSurfaceId, OpenMode.ForRead);
+    var properties = volumeSurface.GetVolumeProperties();
+    return new Dictionary<string, object?>
     {
-      return "out_of_date";
-    }
-
-    var hasError = CivilObjectUtils.GetPropertyValue<bool?>(corridor, "HasErrors") ?? false;
-    return hasError ? "error" : "built";
+      ["cutVolume"] = properties.UnadjustedCutVolume,
+      ["fillVolume"] = properties.UnadjustedFillVolume,
+      ["netVolume"] = properties.UnadjustedNetVolume,
+      ["units"] = new Dictionary<string, object?>
+      {
+        ["volume"] = CivilObjectUtils.VolumeUnits(database),
+      },
+      ["source"] = "TinVolumeSurface.GetVolumeProperties",
+    };
   }
 }

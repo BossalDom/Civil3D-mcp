@@ -1,5 +1,3 @@
-using System.Collections;
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.Civil.DatabaseServices;
@@ -43,7 +41,7 @@ public static class ProfileCommands
       {
         ["name"] = profile.Name,
         ["handle"] = CivilObjectUtils.GetHandle(profile),
-        ["type"] = MapProfileType(CivilObjectUtils.GetStringProperty(profile, "ProfileType") ?? profile.GetType().Name),
+        ["type"] = MapProfileType(profile.ProfileType.ToString()),
         ["style"] = CivilObjectUtils.GetName(transaction.GetObject(profile.StyleId, OpenMode.ForRead)) ?? string.Empty,
         ["layer"] = profile.Layer,
         ["startStation"] = profile.StartingStation,
@@ -72,8 +70,8 @@ public static class ProfileCommands
     {
       var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
       var profile = CivilObjectUtils.FindProfileByName(alignment, transaction, profileName, OpenMode.ForRead);
-      var elevation = InvokeProfileDouble(profile, station, "ElevationAt", "GetElevationAt", "ElevationFromStation");
-      var grade = InvokeProfileDouble(profile, station, "GradeAt", "GetGradeAt");
+      var elevation = ReadProfileElevation(profile, station);
+      var grade = ReadProfileGrade(profile, station);
 
       return new Dictionary<string, object?>
       {
@@ -106,8 +104,8 @@ public static class ProfileCommands
         samples.Add(new Dictionary<string, object?>
         {
           ["station"] = station,
-          ["elevation"] = InvokeProfileDouble(profile, station, "ElevationAt", "GetElevationAt", "ElevationFromStation"),
-          ["grade"] = InvokeProfileNullableDouble(profile, station, "GradeAt", "GetGradeAt"),
+          ["elevation"] = ReadProfileElevation(profile, station),
+          ["grade"] = ReadProfileGrade(profile, station),
         });
       }
 
@@ -199,7 +197,7 @@ public static class ProfileCommands
     {
       ["name"] = profile.Name,
       ["handle"] = CivilObjectUtils.GetHandle(profile),
-      ["type"] = MapProfileType(CivilObjectUtils.GetStringProperty(profile, "ProfileType") ?? profile.GetType().Name),
+      ["type"] = MapProfileType(profile.ProfileType.ToString()),
       ["style"] = string.Empty,
       ["startStation"] = profile.StartingStation,
       ["endStation"] = profile.EndingStation,
@@ -211,89 +209,65 @@ public static class ProfileCommands
   private static List<Dictionary<string, object?>> ReadProfileEntities(Profile profile)
   {
     var entities = new List<Dictionary<string, object?>>();
-    var collection = CivilObjectUtils.GetPropertyValue<object>(profile, "Entities");
-    if (collection is not IEnumerable enumerable)
-    {
-      return entities;
-    }
-
     var index = 0;
-    foreach (var entity in enumerable)
+    foreach (ProfileEntity entity in profile.Entities)
     {
       entities.Add(new Dictionary<string, object?>
       {
         ["index"] = index++,
-        ["type"] = MapProfileEntityType(entity?.GetType().Name ?? string.Empty),
-        ["startStation"] = CivilObjectUtils.GetPropertyValue<double?>(entity, "StartStation") ?? 0,
-        ["endStation"] = CivilObjectUtils.GetPropertyValue<double?>(entity, "EndStation") ?? 0,
-        ["startElevation"] = CivilObjectUtils.GetPropertyValue<double?>(entity, "StartElevation") ?? 0,
-        ["endElevation"] = CivilObjectUtils.GetPropertyValue<double?>(entity, "EndElevation") ?? 0,
-        ["grade"] = CivilObjectUtils.GetPropertyValue<double?>(entity, "Grade"),
-        ["length"] = CivilObjectUtils.GetPropertyValue<double?>(entity, "Length") ?? 0,
+        ["type"] = MapProfileEntityType(entity.EntityType.ToString()),
+        ["startStation"] = entity.StartStation,
+        ["endStation"] = entity.EndStation,
+        ["startElevation"] = entity.StartElevation,
+        ["endElevation"] = entity.EndElevation,
+        ["grade"] = entity is ProfileTangent tangent ? tangent.Grade : null,
+        ["length"] = entity.Length,
       });
     }
 
     return entities;
   }
 
-  private static (double Min, double Max) GetElevationExtents(Profile profile)
+  private static (double? Min, double? Max) GetElevationExtents(Profile profile)
   {
-    var min = CivilObjectUtils.GetPropertyValue<double?>(profile, "MinimumElevation");
-    var max = CivilObjectUtils.GetPropertyValue<double?>(profile, "MaximumElevation");
-    if (min.HasValue && max.HasValue)
-    {
-      return (min.Value, max.Value);
-    }
-
-    var elevations = ReadProfileEntities(profile)
-      .SelectMany(entity => new[]
-      {
-        Convert.ToDouble(entity["startElevation"] ?? 0d),
-        Convert.ToDouble(entity["endElevation"] ?? 0d),
-      })
+    var elevations = profile.Entities
+      .SelectMany(entity => new[] { entity.StartElevation, entity.EndElevation })
       .ToList();
 
-    return elevations.Count == 0 ? (0, 0) : (elevations.Min(), elevations.Max());
+    return elevations.Count == 0 ? (null, null) : (elevations.Min(), elevations.Max());
   }
 
   private static int CountPvis(Profile profile)
   {
-    var pvis = CivilObjectUtils.GetPropertyValue<object>(profile, "PVIs");
-    if (pvis == null)
-    {
-      return 0;
-    }
-
-    var countProperty = pvis.GetType().GetProperty("Count", BindingFlags.Public | BindingFlags.Instance);
-    return countProperty == null ? 0 : Convert.ToInt32(countProperty.GetValue(pvis) ?? 0);
+    return profile.PVIs.Count;
   }
 
-  private static double InvokeProfileDouble(Profile profile, double station, params string[] methodNames)
+  private static double ReadProfileElevation(Profile profile, double station)
   {
-    foreach (var methodName in methodNames)
+    try
     {
-      var value = CivilObjectUtils.InvokeMethod(profile, methodName, station);
-      if (value != null)
-      {
-        return Convert.ToDouble(value);
-      }
+      return profile.ElevationAt(station);
     }
-
-    throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"The active Civil 3D version does not expose a supported elevation method for profile '{profile.Name}'.");
+    catch (Exception exception)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.API_ERROR",
+        $"Could not read elevation on profile '{profile.Name}' at station {station}: {exception.Message}");
+    }
   }
 
-  private static double? InvokeProfileNullableDouble(Profile profile, double station, params string[] methodNames)
+  private static double ReadProfileGrade(Profile profile, double station)
   {
-    foreach (var methodName in methodNames)
+    try
     {
-      var value = CivilObjectUtils.InvokeMethod(profile, methodName, station);
-      if (value != null)
-      {
-        return Convert.ToDouble(value);
-      }
+      return profile.GradeAt(station);
     }
-
-    return null;
+    catch (Exception exception)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.API_ERROR",
+        $"Could not read grade on profile '{profile.Name}' at station {station}: {exception.Message}");
+    }
   }
 
   private static string MapProfileType(string? value)

@@ -1,6 +1,6 @@
 import * as net from "net";
-import { randomUUID } from "node:crypto";
 import { createLogger } from "./logger.js";
+import { createRpcRequestId } from "./requestContext.js";
 
 const log = createLogger("SocketClient");
 const COMMAND_TIMEOUT_MS = parseInt(process.env.CIVIL3D_COMMAND_TIMEOUT ?? "120000", 10);
@@ -107,8 +107,18 @@ export class ApplicationClientConnection {
     this.isConnected = false;
   }
 
+  public cancel(error = new Civil3DRpcError(
+    "Civil 3D request was cancelled by the caller.",
+    "CIVIL3D.CANCELLED",
+    -32010,
+  )): void {
+    this.rejectPendingRequests(error);
+    this.socket.destroy();
+    this.isConnected = false;
+  }
+
   private generateRequestId(): string {
-    return randomUUID();
+    return createRpcRequestId();
   }
 
   private handleResponse(responseData: string): void {

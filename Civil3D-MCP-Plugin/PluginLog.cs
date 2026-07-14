@@ -29,8 +29,13 @@ public static class PluginLog
   private static readonly object FileSync = new();
   private static readonly Lazy<string> LogFilePathLazy = new(BuildLogFilePath);
   private static Level _minimumLevel = ReadLevelFromEnvironment();
+  private static string? _lastFileError;
 
   public static string LogFilePath => LogFilePathLazy.Value;
+
+  public static string? LastFileError => Volatile.Read(ref _lastFileError);
+
+  public static bool IsFileLoggingHealthy => LastFileError == null && File.Exists(LogFilePath);
 
   public static Level MinimumLevel
   {
@@ -106,11 +111,18 @@ public static class PluginLog
         {
           writer.WriteLine(exception.StackTrace);
         }
+
+        Volatile.Write(ref _lastFileError, null);
       }
     }
-    catch
+    catch (Exception fileException)
     {
       // Logging itself must never throw into plugin code paths.
+      Volatile.Write(
+        ref _lastFileError,
+        $"{fileException.GetType().Name}: {fileException.Message}");
+      System.Diagnostics.Debug.WriteLine(
+        $"Civil3D MCP file logging failed: {LastFileError}");
     }
   }
 

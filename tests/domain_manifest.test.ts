@@ -439,7 +439,11 @@ describe("domain manifest migration", () => {
     expect(coordinateSystem!.operations).toContain("transform");
 
     expect(job).toBeDefined();
+    expect(job!.operations).toContain("start");
     expect(job!.operations).toContain("cancel");
+    const jobDefinition = MIGRATED_DOMAIN_DEFINITIONS.find((definition) => definition.domain === "job");
+    expect(jobDefinition?.actions.cancel.safeForRetry).toBe(true);
+    expect(jobDefinition?.actions.cancel.capabilities).toEqual(["manage"]);
   });
 
   it("generates plugin and docs helper domains including orchestrate", () => {

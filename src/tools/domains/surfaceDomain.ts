@@ -68,8 +68,8 @@ const SurfaceVolumeResultSchema = z.object({
   cutVolume: z.number(),
   fillVolume: z.number(),
   netVolume: z.number(),
-  cutArea: z.number(),
-  fillArea: z.number(),
+  cutArea: z.number().nullable(),
+  fillArea: z.number().nullable(),
   method: z.string(),
   units: z.object({
     volume: z.string(),
@@ -81,8 +81,8 @@ const SurfaceVolumeResponseSchema = z.object({
   cutVolume: z.number(),
   fillVolume: z.number(),
   netVolume: z.number(),
-  cutArea: z.number(),
-  fillArea: z.number(),
+  cutArea: z.number().nullable(),
+  fillArea: z.number().nullable(),
   units: z.object({
     volume: z.string(),
     area: z.string(),

@@ -76,7 +76,22 @@ public sealed class RpcTcpServer
           return;
         }
 
-        var response = await _handler(request, cancellationToken);
+        using var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var disconnectMonitorCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var disconnectMonitor = MonitorClientDisconnectAsync(
+          stream,
+          requestCancellation,
+          disconnectMonitorCancellation.Token);
+
+        var response = await _handler(request, requestCancellation.Token);
+        disconnectMonitorCancellation.Cancel();
+        var clientDisconnected = await disconnectMonitor;
+        if (clientDisconnected)
+        {
+          PluginLog.Debug("RpcTcpServer", "Skipped response write because the client disconnected.");
+          return;
+        }
+
         var responseBytes = Encoding.UTF8.GetBytes(response);
         await stream.WriteAsync(responseBytes, cancellationToken);
         await stream.FlushAsync(cancellationToken);
@@ -86,9 +101,13 @@ public sealed class RpcTcpServer
     {
       // Normal plugin shutdown.
     }
-    catch (OperationCanceledException)
+    catch (TimeoutException)
     {
       PluginLog.Warn("RpcTcpServer", $"Closed a client that did not send a complete request within {RequestReadTimeout.TotalSeconds:0} seconds.");
+    }
+    catch (OperationCanceledException)
+    {
+      PluginLog.Debug("RpcTcpServer", "Client disconnected and its queued request was cancelled.");
     }
     catch (InvalidDataException ex)
     {
@@ -107,37 +126,83 @@ public sealed class RpcTcpServer
     using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     readTimeout.CancelAfter(RequestReadTimeout);
 
-    while (!readTimeout.IsCancellationRequested)
+    try
     {
-      var bytesRead = await stream.ReadAsync(buffer, readTimeout.Token);
-      if (bytesRead <= 0)
+      while (!readTimeout.IsCancellationRequested)
       {
-        break;
-      }
+        var bytesRead = await stream.ReadAsync(buffer, readTimeout.Token);
+        if (bytesRead <= 0)
+        {
+          break;
+        }
 
-      if (requestBuffer.Length + bytesRead > MaxRequestBytes)
-      {
-        throw new InvalidDataException($"RPC request exceeds the {MaxRequestBytes}-byte limit.");
-      }
+        if (requestBuffer.Length + bytesRead > MaxRequestBytes)
+        {
+          throw new InvalidDataException($"RPC request exceeds the {MaxRequestBytes}-byte limit.");
+        }
 
-      await requestBuffer.WriteAsync(buffer.AsMemory(0, bytesRead), readTimeout.Token);
-      var requestBytes = requestBuffer.GetBuffer();
-      var requestLength = checked((int)requestBuffer.Length);
+        await requestBuffer.WriteAsync(buffer.AsMemory(0, bytesRead), readTimeout.Token);
+        var requestBytes = requestBuffer.GetBuffer();
+        var requestLength = checked((int)requestBuffer.Length);
 
-      try
-      {
-        using var _ = JsonDocument.Parse(
-          new ReadOnlyMemory<byte>(requestBytes, 0, requestLength));
-        return Encoding.UTF8.GetString(requestBytes, 0, requestLength);
+        try
+        {
+          using var _ = JsonDocument.Parse(
+            new ReadOnlyMemory<byte>(requestBytes, 0, requestLength));
+          return Encoding.UTF8.GetString(requestBytes, 0, requestLength);
+        }
+        catch (JsonException)
+        {
+        }
       }
-      catch (JsonException)
-      {
-      }
+    }
+    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && readTimeout.IsCancellationRequested)
+    {
+      throw new TimeoutException("RPC request read timed out.");
     }
 
     return Encoding.UTF8.GetString(
       requestBuffer.GetBuffer(),
       0,
       checked((int)requestBuffer.Length));
+  }
+
+  private static async Task<bool> MonitorClientDisconnectAsync(
+    NetworkStream stream,
+    CancellationTokenSource requestCancellation,
+    CancellationToken monitorCancellation)
+  {
+    var probe = new byte[1];
+    try
+    {
+      while (!monitorCancellation.IsCancellationRequested)
+      {
+        var bytesRead = await stream.ReadAsync(probe, monitorCancellation);
+        if (bytesRead == 0)
+        {
+          requestCancellation.Cancel();
+          return true;
+        }
+
+        // The protocol permits one JSON request per connection. Ignore any
+        // trailing bytes while continuing to watch for the peer's FIN.
+      }
+    }
+    catch (OperationCanceledException) when (monitorCancellation.IsCancellationRequested)
+    {
+      return false;
+    }
+    catch (IOException)
+    {
+      requestCancellation.Cancel();
+      return true;
+    }
+    catch (SocketException)
+    {
+      requestCancellation.Cancel();
+      return true;
+    }
+
+    return false;
   }
 }

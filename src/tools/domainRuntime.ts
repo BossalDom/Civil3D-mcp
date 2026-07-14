@@ -3,12 +3,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { approvalPolicy, hasApprovalRisk } from "./approvalPolicy.js";
 import { captureToolHandler } from "./toolHandlerRegistry.js";
 import { maybeStoreReportResource } from "./reportResourceStore.js";
+import { idempotencyStore } from "./idempotencyStore.js";
+import { createLogger } from "../utils/logger.js";
+import { createRequestId, runWithRequestId } from "../utils/requestContext.js";
 import type { ToolCapability, ToolCatalogEntry, ToolDomain } from "./toolMetadata.js";
 
 type JsonObject = Record<string, unknown>;
 
 interface ToolProgressExtra {
   _meta?: { progressToken?: string | number };
+  signal?: AbortSignal;
   sendNotification?: (notification: {
     method: "notifications/progress";
     params: {
@@ -30,6 +34,7 @@ const MUTATING_CAPABILITIES = new Set<ToolCapability>([
   "export",
   "import",
 ]);
+const log = createLogger("DomainRuntime");
 
 export interface DomainActionDefinition<TArgs = JsonObject> {
   action: string;
@@ -118,6 +123,7 @@ function inferRpcErrorCode(domainCode: string): number {
   if (domainCode === "CIVIL3D.OBJECT_NOT_FOUND") return -32004;
   if (domainCode === "CIVIL3D.TIMEOUT") return -32008;
   if (domainCode === "CIVIL3D.CONFLICT") return -32009;
+  if (domainCode === "CIVIL3D.CANCELLED") return -32010;
   return -32000;
 }
 
@@ -143,51 +149,64 @@ async function executeExposure(
   }
 
   const parsedArgs = actionDefinition.inputSchema.parse(resolved.args);
-  await approvalPolicy.enforce(
-    {
-      toolName: exposure.toolName,
-      action: actionName,
-      capabilities: actionDefinition.capabilities,
-      safeForRetry: actionDefinition.safeForRetry,
-    },
-    rawArgs,
-  );
-  await emitProgress(
-    progressExtra,
-    50,
-    100,
-    `${exposure.displayName}: validated and executing '${actionName}'.`,
-  );
-  const response = await actionDefinition.execute(parsedArgs);
-  const validatedResponse = actionDefinition.responseSchema
-    ? actionDefinition.responseSchema.parse(response)
-    : response;
-  const serializedResponse = JSON.stringify(validatedResponse, null, 2);
-  const reportResource = maybeStoreReportResource(
-    actionName,
-    serializedResponse,
-  );
+  const idempotencyKey = typeof rawArgs.idempotencyKey === "string"
+    ? rawArgs.idempotencyKey
+    : undefined;
+  if (idempotencyKey && !actionDefinition.safeForRetry) {
+    const error = new Error(`Action '${actionName}' does not support idempotent retries.`) as Error & { code: string };
+    error.code = "CIVIL3D.INVALID_INPUT";
+    throw error;
+  }
 
-  return {
-    content: [
+  const executeOnce = async () => {
+    await approvalPolicy.enforce(
       {
-        type: "text" as const,
-        text: serializedResponse,
+        toolName: exposure.toolName,
+        action: actionName,
+        capabilities: actionDefinition.capabilities,
+        safeForRetry: actionDefinition.safeForRetry,
       },
-      ...(reportResource ? [{
-        type: "resource_link" as const,
-        uri: reportResource.uri,
-        name: reportResource.name,
-        description: "Structured Civil 3D result retained for MCP resource retrieval.",
-        mimeType: "application/json",
-        size: reportResource.size,
-      }] : []),
-    ],
-    structuredContent: {
-      action: actionName,
-      result: validatedResponse,
-    },
+      rawArgs,
+    );
+    await emitProgress(
+      progressExtra,
+      50,
+      100,
+      `${exposure.displayName}: validated and executing '${actionName}'.`,
+    );
+    const response = await actionDefinition.execute(parsedArgs);
+    const validatedResponse = actionDefinition.responseSchema
+      ? actionDefinition.responseSchema.parse(response)
+      : response;
+    const serializedResponse = JSON.stringify(validatedResponse, null, 2);
+    const reportResource = maybeStoreReportResource(actionName, serializedResponse);
+
+    return {
+      content: [
+        { type: "text" as const, text: serializedResponse },
+        ...(reportResource ? [{
+          type: "resource_link" as const,
+          uri: reportResource.uri,
+          name: reportResource.name,
+          description: "Structured Civil 3D result retained for MCP resource retrieval.",
+          mimeType: "application/json",
+          size: reportResource.size,
+        }] : []),
+      ],
+      structuredContent: { action: actionName, result: validatedResponse },
+    };
   };
+
+  if (!idempotencyKey) return executeOnce();
+  const signature = { ...rawArgs };
+  delete signature.approvalToken;
+  delete signature.idempotencyKey;
+  return idempotencyStore.execute(
+    `${exposure.toolName}:${actionName}`,
+    idempotencyKey,
+    signature,
+    executeOnce,
+  );
 }
 
 async function emitProgress(
@@ -269,12 +288,21 @@ function createExposureHandler(
     const progressExtra = extra && typeof extra === "object"
       ? extra as ToolProgressExtra
       : undefined;
-    try {
-      await emitProgress(progressExtra, 0, 100, `${exposure.displayName}: request received.`);
-      const result = await executeExposure(definition, exposure, rawArgs, progressExtra);
-      await emitProgress(progressExtra, 100, 100, `${exposure.displayName}: completed.`);
-      return result;
-    } catch (error) {
+    const requestId = createRequestId();
+    const startedAt = performance.now();
+    return runWithRequestId(requestId, async () => {
+      try {
+        log.info("Tool request started", { requestId, tool: exposure.toolName });
+        await emitProgress(progressExtra, 0, 100, `${exposure.displayName}: request received.`);
+        const result = await executeExposure(definition, exposure, rawArgs, progressExtra);
+        await emitProgress(progressExtra, 100, 100, `${exposure.displayName}: completed.`);
+        log.info("Tool request completed", {
+          requestId,
+          tool: exposure.toolName,
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+        return { ...result, _meta: { requestId } };
+      } catch (error) {
       const actionName =
         typeof rawArgs.action === "string"
           ? String(rawArgs.action)
@@ -282,9 +310,16 @@ function createExposureHandler(
             ? exposure.supportedActions[0]
             : undefined;
 
-      await emitProgress(progressExtra, 100, 100, `${exposure.displayName}: failed.`);
-      return buildToolErrorResult(exposure.toolName, actionName, error);
-    }
+        await emitProgress(progressExtra, 100, 100, `${exposure.displayName}: failed.`);
+        log.error("Tool request failed", {
+          requestId,
+          tool: exposure.toolName,
+          durationMs: Math.round(performance.now() - startedAt),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { ...buildToolErrorResult(exposure.toolName, actionName, error), _meta: { requestId } };
+      }
+    }, progressExtra?.signal);
   };
 }
 
@@ -308,6 +343,7 @@ export function registerSelectedDomainTools(
         inputSchema: {
           ...exposure.inputShape,
           approvalToken: z.string().min(1).optional(),
+          idempotencyKey: z.string().min(1).max(128).optional(),
         },
         outputSchema: buildExposureOutputSchema(definition, exposure),
         annotations: buildExposureAnnotations(definition, exposure),

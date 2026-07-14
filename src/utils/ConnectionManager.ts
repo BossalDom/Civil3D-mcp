@@ -1,5 +1,6 @@
-import { ApplicationClientConnection } from "./SocketClient.js";
+import { ApplicationClientConnection, Civil3DRpcError } from "./SocketClient.js";
 import { createLogger } from "./logger.js";
+import { currentAbortSignal } from "./requestContext.js";
 
 const log = createLogger("ConnectionManager");
 
@@ -29,8 +30,17 @@ export async function withApplicationConnection<T>(
 
 async function sendSingleCommand(command: string, params: unknown): Promise<any> {
   const appClient = new ApplicationClientConnection(CIVIL3D_HOST, CIVIL3D_PORT);
+  const signal = currentAbortSignal();
+  const cancellationError = new Civil3DRpcError(
+    `Civil 3D command '${command}' was cancelled by the caller.`,
+    "CIVIL3D.CANCELLED",
+    -32010,
+  );
+  const cancel = () => appClient.cancel(cancellationError);
 
   try {
+    if (signal?.aborted) throw cancellationError;
+    signal?.addEventListener("abort", cancel, { once: true });
     if (!appClient.isConnected) {
       await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -85,7 +95,11 @@ async function sendSingleCommand(command: string, params: unknown): Promise<any>
     }
 
     return await appClient.sendCommand(command, params);
+  } catch (error) {
+    if (signal?.aborted) throw cancellationError;
+    throw error;
   } finally {
+    signal?.removeEventListener("abort", cancel);
     appClient.disconnect();
   }
 }

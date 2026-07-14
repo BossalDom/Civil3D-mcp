@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using App = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace Civil3DMcpPlugin;
 
@@ -9,6 +10,7 @@ public sealed record PluginStatus(
   bool OperationInProgress,
   string? CurrentOperation,
   int QueueDepth,
+  int QueueCapacity,
   long? CurrentOperationStartedAtUnixMs,
   string? CurrentRequestId);
 
@@ -75,6 +77,7 @@ public static class PluginRuntime
         _activeOperations > 0,
         _currentOperation,
         _queueDepth,
+        MaxQueuedHostOperations,
         _currentOperationStartedAtUnixMs,
         _currentRequestId);
     }
@@ -128,28 +131,29 @@ public static class PluginRuntime
     CurrentRequestId.Value = id?.ToJsonString();
     CurrentRequestCancellation.Value = cancellationToken;
 
+    var timer = System.Diagnostics.Stopwatch.StartNew();
     try
     {
       PluginLog.Debug("Dispatch", $"-> {method} [{CurrentRequestId.Value ?? "no-id"}]");
       var result = await CommandDispatcher.DispatchAsync(method, parameters, cancellationToken);
-      PluginLog.Debug("Dispatch", $"<- {method} [{CurrentRequestId.Value ?? "no-id"}] ok");
+      PluginLog.Debug("Dispatch", $"<- {method} [{CurrentRequestId.Value ?? "no-id"}] ok durationMs={timer.ElapsedMilliseconds}");
       return JsonRpcProtocol.SerializeResult(id, result);
     }
     catch (JsonRpcDispatchException ex)
     {
       // Domain-level errors are part of the contract; record at info so they
       // show up in diagnostics without looking like runtime faults.
-      PluginLog.Info("Dispatch", $"<- {method} [{CurrentRequestId.Value ?? "no-id"}] dispatch error {ex.Code}: {ex.Message}");
+      PluginLog.Info("Dispatch", $"<- {method} [{CurrentRequestId.Value ?? "no-id"}] dispatch error {ex.Code} durationMs={timer.ElapsedMilliseconds}: {ex.Message}");
       return JsonRpcProtocol.SerializeError(id, JsonRpcProtocol.NumericErrorCode(ex.Code), ex.Code, ex.Message);
     }
     catch (OperationCanceledException)
     {
-      PluginLog.Info("Dispatch", $"<- {method} [{CurrentRequestId.Value ?? "no-id"}] cancelled");
+      PluginLog.Info("Dispatch", $"<- {method} [{CurrentRequestId.Value ?? "no-id"}] cancelled durationMs={timer.ElapsedMilliseconds}");
       return JsonRpcProtocol.SerializeError(id, -32010, "CIVIL3D.CANCELLED", $"Operation '{method}' was cancelled.");
     }
     catch (Exception ex)
     {
-      PluginLog.Error("Dispatch", $"<- {method} [{CurrentRequestId.Value ?? "no-id"}] unhandled failure", ex);
+      PluginLog.Error("Dispatch", $"<- {method} [{CurrentRequestId.Value ?? "no-id"}] unhandled failure durationMs={timer.ElapsedMilliseconds} category={ex.GetType().Name}", ex);
       return JsonRpcProtocol.SerializeError(id, -32603, "CIVIL3D.INTERNAL_ERROR", "The Civil 3D plugin encountered an unexpected error.");
     }
     finally
@@ -165,6 +169,42 @@ public static class PluginRuntime
   internal static string GetCurrentRequestOperation() => CurrentRequestOperation.Value ?? "Civil 3D operation";
 
   internal static string? GetCurrentRequestId() => CurrentRequestId.Value;
+
+  internal static string? GetActiveDrawingIdentity()
+  {
+    var document = App.DocumentManager.MdiActiveDocument;
+    if (document == null)
+    {
+      return null;
+    }
+
+    var fileName = document.Database.Filename;
+    return string.IsNullOrWhiteSpace(fileName) ? document.Name : fileName;
+  }
+
+  internal static async Task<T> RunWithRequestContextAsync<T>(
+    string operation,
+    string requestId,
+    CancellationToken cancellationToken,
+    Func<Task<T>> action)
+  {
+    var previousOperation = CurrentRequestOperation.Value;
+    var previousRequestId = CurrentRequestId.Value;
+    var previousCancellation = CurrentRequestCancellation.Value;
+    CurrentRequestOperation.Value = operation;
+    CurrentRequestId.Value = requestId;
+    CurrentRequestCancellation.Value = cancellationToken;
+    try
+    {
+      return await action();
+    }
+    finally
+    {
+      CurrentRequestOperation.Value = previousOperation;
+      CurrentRequestId.Value = previousRequestId;
+      CurrentRequestCancellation.Value = previousCancellation;
+    }
+  }
 
   internal static void QueueHostOperation()
   {

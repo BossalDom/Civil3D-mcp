@@ -80,7 +80,12 @@ public static class CorridorCommands
 
     // Create the job up front so the caller gets a jobId immediately — they
     // poll civil3d_job(status, jobId) until the background rebuild finishes.
-    var job = JobRegistry.Create($"Rebuilding corridor {name}");
+    var requestId = PluginRuntime.GetCurrentRequestId();
+    var job = JobRegistry.Create(
+      $"Rebuilding corridor {name}",
+      "corridor_rebuild",
+      requestId,
+      PluginRuntime.GetActiveDrawingIdentity());
     job.CancellationSource = new CancellationTokenSource();
     var cancellationToken = job.CancellationSource.Token;
 
@@ -92,36 +97,38 @@ public static class CorridorCommands
     {
       try
       {
-        if (cancellationToken.IsCancellationRequested)
-        {
-          // Caller cancelled before the worker even started running.
-          return;
-        }
-
-        JobRegistry.Progress(job.JobId, 10, $"Scheduling rebuild for corridor {name}", null);
-
-        var result = await CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-        {
-          cancellationToken.ThrowIfCancellationRequested();
-
-          var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, name, OpenMode.ForWrite);
-
-          // Rebuild is synchronous once inside the document lock; Civil 3D
-          // does not expose an API-level cancellation handle. We honour the
-          // token by aborting before and after the call.
-          JobRegistry.Progress(job.JobId, 40, $"Rebuilding corridor {name}", null);
-          corridor.Rebuild();
-          cancellationToken.ThrowIfCancellationRequested();
-
-          return new Dictionary<string, object?>
+        await PluginRuntime.RunWithRequestContextAsync(
+          "rebuildCorridor",
+          $"{requestId ?? "job"}:job:{job.JobId}",
+          cancellationToken,
+          async () =>
           {
-            ["corridorName"] = name,
-            ["state"] = GetCorridorState(corridor),
-          };
-        });
+            cancellationToken.ThrowIfCancellationRequested();
+            JobRegistry.Progress(job.JobId, 10, $"Scheduling rebuild for corridor {name}", null);
 
-        JobRegistry.Complete(job.JobId, result);
-        PluginLog.Info("Corridor", $"Rebuild completed for corridor '{name}' (job {job.JobId}).");
+            var result = await CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+            {
+              cancellationToken.ThrowIfCancellationRequested();
+
+              var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, name, OpenMode.ForWrite);
+
+              // Corridor.Rebuild() is synchronous and exposes no cancellation
+              // handle. Abort before entering and after it returns.
+              JobRegistry.Progress(job.JobId, 40, $"Rebuilding corridor {name}", null);
+              corridor.Rebuild();
+              cancellationToken.ThrowIfCancellationRequested();
+
+              return new Dictionary<string, object?>
+              {
+                ["corridorName"] = name,
+                ["state"] = GetCorridorState(corridor),
+              };
+            });
+
+            JobRegistry.Complete(job.JobId, result);
+            PluginLog.Info("Corridor", $"Rebuild completed for corridor '{name}' (job {job.JobId}).");
+            return result;
+          });
       }
       catch (OperationCanceledException)
       {
@@ -139,6 +146,7 @@ public static class CorridorCommands
         {
           PluginLog.Error("Corridor", $"Unable to mark job {job.JobId} as failed.", failEx);
         }
+        job.CancellationSource = null;
       }
       finally
       {

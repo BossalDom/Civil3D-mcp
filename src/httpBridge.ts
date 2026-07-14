@@ -8,6 +8,8 @@ import {
 import { executeToolCallViaOrchestrator } from "./tools/civil3d_orchestrate.js";
 import { createLogger } from "./utils/logger.js";
 import { Civil3DRpcError } from "./utils/SocketClient.js";
+import { createRequestId, runWithRequestId } from "./utils/requestContext.js";
+import { dependencyVersions } from "./version.js";
 
 const log = createLogger("HttpBridge");
 
@@ -203,8 +205,12 @@ function writeJson(response: ServerResponse, statusCode: number, payload: unknow
   response.statusCode = statusCode;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-MCP-Token,X-Request-Id");
   response.end(JSON.stringify(payload));
+}
+
+function objectResult(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
 function writeError(
@@ -222,6 +228,7 @@ function statusForDomainCode(code: string): number {
   if (code === "CIVIL3D.FORBIDDEN" || code === "CIVIL3D.PATH_NOT_ALLOWED" || code === "CIVIL3D.FILE_TYPE_NOT_ALLOWED") return 403;
   if (code === "CIVIL3D.OBJECT_NOT_FOUND" || code === "CIVIL3D.METHOD_NOT_FOUND") return 404;
   if (code === "CIVIL3D.CONFLICT") return 409;
+  if (code === "CIVIL3D.CANCELLED") return 499;
   if (code === "CIVIL3D.REQUEST_TOO_LARGE") return 413;
   if (code === "CIVIL3D.TIMEOUT") return 504;
   if (code === "CIVIL3D.NO_DRAWING" || code === "CIVIL3D.UNAVAILABLE" || code === "CIVIL3D.HOST_BUSY") return 503;
@@ -309,11 +316,12 @@ async function executeLegacyTool(toolName: string, parameters: Record<string, un
 async function executeBridgeTool(toolName: string, parameters: Record<string, unknown>): Promise<unknown> {
   // 1. Check the global tool handler registry (populated during registerTools)
   if (hasToolHandler(toolName)) {
-    if (toolName === "civil3d_orchestrate") {
-      return await executeRegisteredTool(toolName, parameters);
-    }
-
-    return await executeToolCallViaOrchestrator(toolName, parameters);
+    // The registered handler is the authoritative MCP path: it resolves the
+    // exposure action, validates its schema, enforces approval, and dispatches
+    // to the host. Re-running exact HTTP calls through the intent catalog can
+    // misclassify valid parameters (for example point delete uses pointNumbers,
+    // while a generic catalog heuristic expects name).
+    return await executeRegisteredTool(toolName, parameters);
   }
 
   // 2. Legacy convenience endpoints for Copilot drawing-context queries
@@ -357,6 +365,56 @@ async function handleHealth(request: IncomingMessage, response: ServerResponse):
   }
 }
 
+async function probePlugin(): Promise<Record<string, unknown>> {
+  return objectResult(await executeBridgeTool("civil3d_health", {}));
+}
+
+function queueHealth(result: Record<string, unknown>) {
+  const queueDepth = typeof result.queueDepth === "number" ? result.queueDepth : undefined;
+  const queueCapacity = typeof result.queueCapacity === "number" ? result.queueCapacity : undefined;
+  const healthy = queueDepth === undefined || queueCapacity === undefined || queueDepth < queueCapacity;
+  return { healthy, queueDepth, queueCapacity, jobs: result.jobs };
+}
+
+async function handleOperationalHealth(path: string, response: ServerResponse): Promise<void> {
+  if (path === "/health/version") {
+    writeJson(response, 200, { bridge: "ok", versions: dependencyVersions() });
+    return;
+  }
+
+  try {
+    const plugin = await probePlugin();
+    const queue = queueHealth(plugin);
+    if (path === "/health/plugin") {
+      writeJson(response, 200, plugin);
+      return;
+    }
+    if (path === "/health/queue") {
+      writeJson(response, queue.healthy ? 200 : 503, queue);
+      return;
+    }
+
+    const connected = plugin.connected !== false && plugin.pluginRunning !== false;
+    const ready = connected && queue.healthy;
+    writeJson(response, ready ? 200 : 503, {
+      ready,
+      bridge: "ok",
+      plugin,
+      queue,
+      versions: dependencyVersions(),
+    });
+  } catch (error) {
+    const mapped = mapHttpError(error);
+    writeJson(response, 503, {
+      ready: false,
+      bridge: "ok",
+      connected: false,
+      error: { code: mapped.code, message: mapped.message },
+      versions: dependencyVersions(),
+    });
+  }
+}
+
 async function handleExecute(
   request: IncomingMessage,
   response: ServerResponse,
@@ -389,7 +447,7 @@ function writePreflight(
   response.statusCode = 204;
   applyCorsHeaders(request, response, allowedOrigins);
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-MCP-Token");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-MCP-Token,X-Request-Id");
   response.end();
 }
 
@@ -397,7 +455,20 @@ export function startHttpBridge(options: HttpBridgeOptions = {}) {
   const config = resolveConfig(options);
 
   const server = createServer(async (request, response) => {
-    try {
+    const suppliedRequestId = request.headers["x-request-id"];
+    const requestId = typeof suppliedRequestId === "string" && /^[\w.-]{1,128}$/.test(suppliedRequestId)
+      ? suppliedRequestId
+      : createRequestId();
+    const requestCancellation = new AbortController();
+    const requestSocket = request.socket;
+    const cancelOnDisconnect = () => {
+      if (!response.writableEnded) requestCancellation.abort();
+    };
+    requestSocket.once("close", cancelOnDisconnect);
+    response.setHeader("X-Request-Id", requestId);
+    const startedAt = performance.now();
+    await runWithRequestId(requestId, async () => {
+      try {
       const method = request.method ?? "GET";
       const rawUrl = request.url ?? "/";
       const path = rawUrl.split("?", 1)[0];
@@ -425,8 +496,13 @@ export function startHttpBridge(options: HttpBridgeOptions = {}) {
         return;
       }
 
-      if (method === "GET" && path === "/health") {
+      if (method === "GET" && (path === "/health" || path === "/health/live")) {
         await handleHealth(request, response);
+        return;
+      }
+
+      if (method === "GET" && ["/health/ready", "/health/plugin", "/health/queue", "/health/version"].includes(path)) {
+        await handleOperationalHealth(path, response);
         return;
       }
 
@@ -442,10 +518,20 @@ export function startHttpBridge(options: HttpBridgeOptions = {}) {
       }
 
       writeError(response, 404, "CIVIL3D.OBJECT_NOT_FOUND", "Not found");
-    } catch (error) {
-      const mapped = mapHttpError(error);
-      writeError(response, mapped.statusCode, mapped.code, mapped.message);
-    }
+      } catch (error) {
+        const mapped = mapHttpError(error);
+        writeError(response, mapped.statusCode, mapped.code, mapped.message);
+      } finally {
+        requestSocket.removeListener("close", cancelOnDisconnect);
+        log.info("HTTP request completed", {
+          requestId,
+          method: request.method ?? "GET",
+          path: (request.url ?? "/").split("?", 1)[0],
+          statusCode: response.statusCode,
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+      }
+    }, requestCancellation.signal);
   });
 
   server.listen(config.port, config.host, () => {

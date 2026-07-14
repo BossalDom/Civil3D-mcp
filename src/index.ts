@@ -3,12 +3,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { registerTools } from "./tools/register.js";
 import { startHttpBridge } from "./httpBridge.js";
 import { createLogger } from "./utils/logger.js";
+import { APP_VERSION } from "./version.js";
 
 const log = createLogger("MCP");
 
 const server = new McpServer({
   name: "civil3d-mcp",
-  version: "1.0.0",
+  version: APP_VERSION,
 });
 
 async function main() {

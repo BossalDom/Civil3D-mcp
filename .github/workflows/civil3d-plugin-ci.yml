@@ -1,0 +1,38 @@
+name: Civil 3D 2026 plugin CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Civil3D-MCP-Plugin/**"
+      - "package.json"
+      - "scripts/sync-version.mjs"
+
+jobs:
+  plugin:
+    runs-on: [self-hosted, Windows, Civil3D-2026]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: npm run version:check
+      - name: Compile against licensed Civil 3D references
+        shell: powershell
+        run: dotnet build ./Civil3D-MCP-Plugin/Civil3DMcpPlugin.csproj -c Release /p:Civil3DReferencesPath="$env:CIVIL3D_REFERENCES_PATH"
+      - name: Build Node runtime for live smoke
+        if: ${{ vars.RUN_CIVIL3D_LIVE_SMOKE == 'true' }}
+        run: npm run build
+      - name: Validate production MCP client
+        if: ${{ vars.RUN_CIVIL3D_LIVE_SMOKE == 'true' }}
+        run: node ./scripts/live-mcp-client-smoke.mjs
+      - name: Run opt-in disposable host smoke
+        if: ${{ vars.RUN_CIVIL3D_LIVE_SMOKE == 'true' }}
+        shell: powershell
+        env:
+          CIVIL3D_LIVE_SMOKE_CONFIRM: DISPOSABLE_DRAWING
+          CIVIL3D_LIVE_SMOKE_QC_PATH: ${{ runner.temp }}\civil3d-mcp-live-qc.txt
+        run: node ./scripts/live-host-smoke.mjs

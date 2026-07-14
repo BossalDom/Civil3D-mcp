@@ -21,6 +21,7 @@ describe("MCP server startup", () => {
       const drawing = tools.tools.find((tool) => tool.name === "civil3d_drawing");
       expect(tools.tools).toHaveLength(MIGRATED_DOMAIN_DEFINITIONS.length + 3);
       expect(health?.outputSchema).toBeDefined();
+      expect(health?.inputSchema.properties).toHaveProperty("idempotencyKey");
       expect(health?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
       expect(drawing?.outputSchema).toBeDefined();
       expect(drawing?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });

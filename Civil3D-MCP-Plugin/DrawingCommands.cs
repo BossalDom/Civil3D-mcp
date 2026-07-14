@@ -16,6 +16,7 @@ public static class DrawingCommands
     var status = PluginRuntime.GetStatus();
     var doc = App.DocumentManager.MdiActiveDocument;
     var process = System.Diagnostics.Process.GetCurrentProcess();
+    var jobs = JobRegistry.GetStats();
 
     object response = new Dictionary<string, object?>
     {
@@ -26,12 +27,26 @@ public static class DrawingCommands
       ["operationInProgress"] = status.OperationInProgress,
       ["currentOperation"] = status.CurrentOperation,
       ["queueDepth"] = status.QueueDepth,
+      ["queueCapacity"] = status.QueueCapacity,
       ["currentOperationStartedAtUnixMs"] = status.CurrentOperationStartedAtUnixMs,
       ["currentRequestId"] = status.CurrentRequestId,
       ["currentOperationDurationMs"] = status.CurrentOperationStartedAtUnixMs is long startedAt
         ? Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - startedAt)
         : null,
       ["memoryUsageMb"] = Math.Round(process.PrivateMemorySize64 / 1024d / 1024d, 2),
+      ["logFilePath"] = PluginLog.LogFilePath,
+      ["fileLoggingHealthy"] = PluginLog.IsFileLoggingHealthy,
+      ["fileLoggingError"] = PluginLog.LastFileError,
+      ["jobs"] = new Dictionary<string, object?>
+      {
+        ["total"] = jobs.Total,
+        ["running"] = jobs.Running,
+        ["completed"] = jobs.Completed,
+        ["failed"] = jobs.Failed,
+        ["cancelled"] = jobs.Cancelled,
+        ["capacity"] = jobs.Capacity,
+        ["terminalRetentionMinutes"] = jobs.TerminalRetentionMinutes,
+      },
     };
 
     return Task.FromResult<object?>(response);

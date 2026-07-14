@@ -197,5 +197,26 @@ describe("ApplicationClientConnection", () => {
       expect(connClient.responseCallbacks.size).toBe(0);
       connClient.disconnect();
     });
+
+    it("rejects pending commands with the stable cancellation code", async () => {
+      const requestReceived = new Promise<void>((resolve) => {
+        server.on("connection", (socket) => socket.once("data", () => resolve()));
+      });
+      const connClient = new ApplicationClientConnection("localhost", serverPort);
+      await new Promise<void>((resolve, reject) => {
+        connClient.socket.on("connect", resolve);
+        connClient.socket.on("error", reject);
+        connClient.connect();
+      });
+
+      const pending = connClient.sendCommand("cancelMe", {});
+      await requestReceived;
+      connClient.cancel();
+
+      await expect(pending).rejects.toMatchObject({
+        code: "CIVIL3D.CANCELLED",
+        rpcCode: -32010,
+      });
+    });
   });
 });

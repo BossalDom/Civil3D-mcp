@@ -28,6 +28,7 @@ vi.mock("../src/tools/civil3d_orchestrate.js", () => ({
 
 import { startHttpBridge } from "../src/httpBridge.js";
 import { Civil3DRpcError } from "../src/utils/SocketClient.js";
+import { currentAbortSignal } from "../src/utils/requestContext.js";
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -114,21 +115,60 @@ describe("httpBridge", () => {
       expect(executeOrchestratorMock).not.toHaveBeenCalled();
     });
 
-    it("?deep=1 routes through civil3d_health via the orchestrator", async () => {
+    it("exposes dependency versions without probing the plugin", async () => {
+      handle = await launchBridge();
+
+      const res = await request("GET", `${handle.baseUrl}/health/version`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        bridge: "ok",
+        versions: { application: "1.2.1", mcpSdk: expect.any(String), node: expect.any(String) },
+      });
+      expect(executeOrchestratorMock).not.toHaveBeenCalled();
+    });
+
+    it("fails readiness when the plugin is unavailable", async () => {
       hasToolHandlerMock.mockImplementation((name) => name === "civil3d_health");
-      executeOrchestratorMock.mockResolvedValue({ running: true, pluginRunning: true });
+      executeRegisteredToolMock.mockRejectedValue(new Error("Plugin not running"));
+      handle = await launchBridge();
+
+      const res = await request("GET", `${handle.baseUrl}/health/ready`);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({ ready: false, connected: false });
+    });
+
+    it("fails readiness and queue health when the host queue is full", async () => {
+      hasToolHandlerMock.mockImplementation((name) => name === "civil3d_health");
+      executeRegisteredToolMock.mockResolvedValue({ connected: true, queueDepth: 64, queueCapacity: 64 });
+      handle = await launchBridge();
+
+      const readiness = await request("GET", `${handle.baseUrl}/health/ready`);
+      const queue = await request("GET", `${handle.baseUrl}/health/queue`);
+
+      expect(readiness.status).toBe(503);
+      expect(readiness.body).toMatchObject({ ready: false, queue: { healthy: false } });
+      expect(queue.status).toBe(503);
+      expect(queue.body).toMatchObject({ healthy: false, queueDepth: 64, queueCapacity: 64 });
+    });
+
+    it("?deep=1 routes through the registered civil3d_health handler", async () => {
+      hasToolHandlerMock.mockImplementation((name) => name === "civil3d_health");
+      executeRegisteredToolMock.mockResolvedValue({ running: true, pluginRunning: true });
       handle = await launchBridge();
 
       const res = await request("GET", `${handle.baseUrl}/health?deep=1`);
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ running: true, pluginRunning: true });
-      expect(executeOrchestratorMock).toHaveBeenCalledWith("civil3d_health", {});
+      expect(executeRegisteredToolMock).toHaveBeenCalledWith("civil3d_health", {});
+      expect(executeOrchestratorMock).not.toHaveBeenCalled();
     });
 
     it("?deep=1 reports 503 when the plugin probe fails", async () => {
       hasToolHandlerMock.mockImplementation((name) => name === "civil3d_health");
-      executeOrchestratorMock.mockRejectedValue(new Error("Plugin not running"));
+      executeRegisteredToolMock.mockRejectedValue(new Error("Plugin not running"));
       handle = await launchBridge();
 
       const res = await request("GET", `${handle.baseUrl}/health?deep=1`);
@@ -154,9 +194,9 @@ describe("httpBridge", () => {
   });
 
   describe("POST /execute", () => {
-    it("routes registered non-orchestrate tools through executeToolCallViaOrchestrator", async () => {
+    it("routes registered tools through their authoritative MCP handler", async () => {
       hasToolHandlerMock.mockImplementation((name) => name === "civil3d_alignment");
-      executeOrchestratorMock.mockResolvedValue({ alignments: [{ name: "Mainline" }] });
+      executeRegisteredToolMock.mockResolvedValue({ alignments: [{ name: "Mainline" }] });
       handle = await launchBridge();
 
       const res = await request("POST", `${handle.baseUrl}/execute`, {
@@ -166,9 +206,8 @@ describe("httpBridge", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ alignments: [{ name: "Mainline" }] });
-      expect(executeOrchestratorMock).toHaveBeenCalledWith("civil3d_alignment", { action: "list" });
-      // civil3d_orchestrate bypass path must NOT be used for non-orchestrate tools
-      expect(executeRegisteredToolMock).not.toHaveBeenCalled();
+      expect(executeRegisteredToolMock).toHaveBeenCalledWith("civil3d_alignment", { action: "list" });
+      expect(executeOrchestratorMock).not.toHaveBeenCalled();
     });
 
     it("routes civil3d_orchestrate calls through executeRegisteredTool directly", async () => {
@@ -186,6 +225,29 @@ describe("httpBridge", () => {
       expect(executeRegisteredToolMock).toHaveBeenCalledWith("civil3d_orchestrate", { request: "list alignments" });
       expect(executeOrchestratorMock).not.toHaveBeenCalled();
     });
+
+    it.each(["civil3d_preview_action", "civil3d_request_approval"])(
+      "routes the %s broker through its registered handler directly",
+      async (toolName) => {
+        hasToolHandlerMock.mockImplementation((name) => name === toolName);
+        executeRegisteredToolMock.mockResolvedValue({ approvalToken: "approval-1" });
+        handle = await launchBridge();
+        const parameters = {
+          toolName: "civil3d_drawing",
+          action: "new",
+          parameters: { action: "new" },
+        };
+
+        const res = await request("POST", `${handle.baseUrl}/execute`, {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tool: toolName, parameters }),
+        });
+
+        expect(res.status).toBe(200);
+        expect(executeRegisteredToolMock).toHaveBeenCalledWith(toolName, parameters);
+        expect(executeOrchestratorMock).not.toHaveBeenCalled();
+      },
+    );
 
     it("returns 400 when the body is missing a tool name", async () => {
       handle = await launchBridge();
@@ -223,7 +285,7 @@ describe("httpBridge", () => {
 
     it("maps a not-found handler failure to 404", async () => {
       hasToolHandlerMock.mockImplementation((name) => name === "civil3d_alignment");
-      executeOrchestratorMock.mockRejectedValue(new Error("Alignment 'Foo' not found"));
+      executeRegisteredToolMock.mockRejectedValue(new Error("Alignment 'Foo' not found"));
       handle = await launchBridge();
 
       const res = await request("POST", `${handle.baseUrl}/execute`, {
@@ -239,7 +301,7 @@ describe("httpBridge", () => {
 
     it("maps missing required fields to a validation response", async () => {
       hasToolHandlerMock.mockReturnValue(true);
-      executeOrchestratorMock.mockRejectedValue(new Error("Missing required fields: name"));
+      executeRegisteredToolMock.mockRejectedValue(new Error("Missing required fields: name"));
       handle = await launchBridge();
 
       const res = await request("POST", `${handle.baseUrl}/execute`, {
@@ -299,7 +361,7 @@ describe("httpBridge", () => {
 
     it("maps Civil 3D domain errors to stable HTTP status and error codes", async () => {
       hasToolHandlerMock.mockReturnValue(true);
-      executeOrchestratorMock.mockRejectedValue(
+      executeRegisteredToolMock.mockRejectedValue(
         new Civil3DRpcError("Surface 'Missing' was not found", "CIVIL3D.OBJECT_NOT_FOUND", -32004),
       );
       handle = await launchBridge();
@@ -313,6 +375,32 @@ describe("httpBridge", () => {
       expect(res.body).toEqual({
         error: { code: "CIVIL3D.OBJECT_NOT_FOUND", message: "Surface 'Missing' was not found" },
       });
+    });
+
+    it("aborts downstream work when the HTTP caller disconnects", async () => {
+      hasToolHandlerMock.mockReturnValue(true);
+      let observeAbort!: () => void;
+      const aborted = new Promise<void>((resolve) => { observeAbort = resolve; });
+      executeRegisteredToolMock.mockImplementation(async () => await new Promise((_, reject) => {
+        const signal = currentAbortSignal();
+        expect(signal).toBeDefined();
+        signal!.addEventListener("abort", () => {
+          observeAbort();
+          reject(new Civil3DRpcError("Caller disconnected", "CIVIL3D.CANCELLED", -32010));
+        }, { once: true });
+      }));
+      handle = await launchBridge();
+      const controller = new AbortController();
+      const pending = fetch(`${handle.baseUrl}/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Connection: "close" },
+        body: JSON.stringify({ tool: "civil3d_health", parameters: {} }),
+        signal: controller.signal,
+      });
+      setTimeout(() => controller.abort(), 25);
+
+      await expect(pending).rejects.toThrow();
+      await expect(aborted).resolves.toBeUndefined();
     });
   });
 

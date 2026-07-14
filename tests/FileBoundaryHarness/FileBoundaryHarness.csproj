@@ -9,5 +9,7 @@
   <ItemGroup>
     <Compile Include="..\..\Civil3D-MCP-Plugin\FileBoundary.cs" Link="FileBoundary.cs" />
     <Compile Include="..\..\Civil3D-MCP-Plugin\JsonRpcProtocol.cs" Link="JsonRpcProtocol.cs" />
+    <Compile Include="..\..\Civil3D-MCP-Plugin\JobRegistry.cs" Link="JobRegistry.cs" />
+    <Compile Include="..\..\Civil3D-MCP-Plugin\RpcTcpServer.cs" Link="RpcTcpServer.cs" />
   </ItemGroup>
 </Project>

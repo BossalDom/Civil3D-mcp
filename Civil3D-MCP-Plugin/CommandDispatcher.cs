@@ -37,6 +37,7 @@ public static class CommandDispatcher
       "getSelectedCivilObjectsInfo" => DrawingCommands.GetSelectedCivilObjectsInfoAsync(parameters),
       "getJobStatus" => Task.FromResult<object?>(JobCommands.GetJobStatus(parameters)),
       "cancelJob" => Task.FromResult<object?>(JobCommands.CancelJob(parameters)),
+      "startJob" => JobCommands.StartJobAsync(parameters),
       "listCogoPoints" => PointCommands.ListCogoPointsAsync(parameters),
       "getCogoPoint" => PointCommands.GetCogoPointAsync(parameters),
       "createCogoPoints" => PointCommands.CreateCogoPointsAsync(parameters),

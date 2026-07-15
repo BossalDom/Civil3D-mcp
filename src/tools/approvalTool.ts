@@ -77,6 +77,7 @@ export function registerApprovalTool(server: McpServer) {
         action: args.action,
         capabilities: target.actionDefinition.capabilities,
         safeForRetry: target.actionDefinition.safeForRetry,
+        requiresActiveDrawing: target.actionDefinition.requiresActiveDrawing,
       });
       return successResult({
         status: requiresApproval ? "approval_required" : "ready",
@@ -108,6 +109,7 @@ export function registerApprovalTool(server: McpServer) {
           action: args.action,
           capabilities: target.actionDefinition.capabilities,
           safeForRetry: target.actionDefinition.safeForRetry,
+          requiresActiveDrawing: target.actionDefinition.requiresActiveDrawing,
         },
         args.parameters,
         (args.ttlSeconds ?? 300) * 1000,

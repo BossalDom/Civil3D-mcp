@@ -239,7 +239,7 @@ public static class WorkflowCommands
     if (!string.IsNullOrWhiteSpace(saveAs))
     {
       saveResult = await RequireDictionary(
-        DrawingCommands.SaveDrawingAsync(new JsonObject { ["saveAs"] = saveAs }),
+        DrawingCommands.SaveDrawingAsync(new JsonObject { ["saveAs"] = saveAs, ["overwrite"] = overwrite }),
         "saveDrawing");
       steps.Add(WorkflowStep("Save startup drawing", "drawing.save", "completed", saveResult));
     }

@@ -58,4 +58,24 @@ describe("approval policy", () => {
     const policy = new ApprovalPolicyService(async () => "drawing-a");
     await expect(policy.enforce(saveTarget, { action: "save" })).rejects.toBeInstanceOf(ApprovalRequiredError);
   });
+
+  it("permits approval for drawing-independent creation when no drawing is open", async () => {
+    const noDrawing = Object.assign(new Error("No active drawing is open in Civil 3D."), {
+      code: "CIVIL3D.NO_DRAWING",
+    });
+    const policy = new ApprovalPolicyService(async () => { throw noDrawing; });
+    const target = {
+      toolName: "civil3d_drawing",
+      action: "new",
+      capabilities: ["create", "manage"] as const,
+      safeForRetry: false,
+      requiresActiveDrawing: false,
+    };
+    const parameters = { action: "new", templatePath: "C:/templates/civil.dwt" };
+    const receipt = await policy.requestApproval(target, parameters);
+
+    expect(receipt.drawingFingerprint).toBe("no-active-drawing");
+    await expect(policy.enforce(target, { ...parameters, approvalToken: receipt.approvalToken }))
+      .resolves.toBeUndefined();
+  });
 });

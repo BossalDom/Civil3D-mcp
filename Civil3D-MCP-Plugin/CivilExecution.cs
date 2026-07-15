@@ -21,6 +21,15 @@ public static class CivilExecution
         try
         {
           var doc = App.DocumentManager.MdiActiveDocument ?? throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active drawing is open in Civil 3D.");
+          var expectedDrawingIdentity = PluginRuntime.GetExpectedDrawingIdentity();
+          var activeDrawingIdentity = PluginRuntime.GetDrawingIdentity(doc);
+          if (!string.IsNullOrWhiteSpace(expectedDrawingIdentity) &&
+              !string.Equals(expectedDrawingIdentity, activeDrawingIdentity, StringComparison.OrdinalIgnoreCase))
+          {
+            throw new JsonRpcDispatchException(
+              "CIVIL3D.CONFLICT",
+              $"The active drawing changed from '{expectedDrawingIdentity}' to '{activeDrawingIdentity}' while the operation was queued. No drawing changes were made.");
+          }
           var civilDoc = CivilApplication.ActiveDocument ?? throw new JsonRpcDispatchException("CIVIL3D.NO_DRAWING", "No active Civil 3D document is available.");
           var database = doc.Database;
 

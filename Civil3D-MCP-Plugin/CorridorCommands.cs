@@ -101,6 +101,7 @@ public static class CorridorCommands
           "rebuildCorridor",
           $"{requestId ?? "job"}:job:{job.JobId}",
           cancellationToken,
+          job.DrawingIdentity,
           async () =>
           {
             cancellationToken.ThrowIfCancellationRequested();
@@ -132,7 +133,7 @@ public static class CorridorCommands
       }
       catch (OperationCanceledException)
       {
-        // Cancel() on JobRegistry already set State=cancelled; nothing more to do.
+        JobRegistry.AcknowledgeCancellation(job.JobId);
         PluginLog.Info("Corridor", $"Rebuild cancelled for corridor '{name}' (job {job.JobId}).");
       }
       catch (Exception ex)

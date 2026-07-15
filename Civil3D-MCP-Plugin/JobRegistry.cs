@@ -19,6 +19,7 @@ public sealed class JobRecord
   public string? FailureCategory { get; set; }
   public List<string> Warnings { get; } = [];
   public CancellationTokenSource? CancellationSource { get; set; }
+  public bool CancellationRequested { get; set; }
   internal object SyncRoot { get; } = new();
 }
 
@@ -139,11 +140,9 @@ public static class JobRegistry
     lock (record.SyncRoot)
     {
       if (record.State != "running") return record;
-      record.State = "cancelled";
-      record.CurrentPhase = null;
+      record.CancellationRequested = true;
+      record.CurrentPhase = "Cancellation requested";
       record.EstimatedRemainingSeconds = null;
-      record.FailureCategory = "CIVIL3D.CANCELLED";
-      MarkTerminal(record);
       cancellationSource = record.CancellationSource;
     }
 
@@ -156,6 +155,22 @@ public static class JobRegistry
       // The worker completed while cancellation was being requested.
     }
 
+    return record;
+  }
+
+  public static JobRecord AcknowledgeCancellation(string jobId)
+  {
+    var record = Get(jobId);
+    lock (record.SyncRoot)
+    {
+      if (record.State != "running") return record;
+      record.CancellationRequested = true;
+      record.State = "cancelled";
+      record.CurrentPhase = null;
+      record.EstimatedRemainingSeconds = null;
+      record.FailureCategory = "CIVIL3D.CANCELLED";
+      MarkTerminal(record);
+    }
     ApplyRetentionSafely();
     return record;
   }

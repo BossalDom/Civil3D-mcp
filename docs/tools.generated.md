@@ -2,13 +2,12 @@
 
 Generated from the runtime manifest for civil3d-mcp 1.2.1. Do not edit by hand.
 
-- Catalog entries: 217
+- Catalog entries: 206
 - Domains: 29
 
 | Tool | Domain | Operations | Plugin methods | Safe retry |
 |---|---|---|---|---|
-| `civil3d_alignment` | alignment | list, get, station_to_point, point_to_station, create, delete, report, add_tangent, add_curve, add_spiral, delete_entity, set_station_equation, get_station_offset, offset_create, widen_transition | listAlignments, getAlignment, alignmentStationToPoint, alignmentPointToStation, createAlignment, deleteAlignment, alignmentSampleStations, alignmentAddTangent, alignmentAddCurve, alignmentAddSpiral, alignmentDeleteEntity, alignmentSetStationEquation, alignmentGetStationOffset, alignmentOffsetCreate, alignmentWidenTransition | no |
-| `civil3d_alignment_add_curve` | alignment | — | alignmentAddCurve | no |
+| `civil3d_alignment` | alignment | list, get, station_to_point, point_to_station, create, delete, report, add_tangent, add_spiral, delete_entity, set_station_equation, get_station_offset, offset_create, widen_transition | listAlignments, getAlignment, alignmentStationToPoint, alignmentPointToStation, createAlignment, deleteAlignment, alignmentSampleStations, alignmentAddTangent, alignmentAddSpiral, alignmentDeleteEntity, alignmentSetStationEquation, alignmentGetStationOffset, alignmentOffsetCreate, alignmentWidenTransition | no |
 | `civil3d_alignment_add_spiral` | alignment | — | alignmentAddSpiral | no |
 | `civil3d_alignment_add_tangent` | alignment | — | alignmentAddTangent | no |
 | `civil3d_alignment_delete_entity` | alignment | — | alignmentDeleteEntity | no |
@@ -17,11 +16,10 @@ Generated from the runtime manifest for civil3d-mcp 1.2.1. Do not edit by hand.
 | `civil3d_alignment_report` | alignment | — | getAlignment, alignmentSampleStations | yes |
 | `civil3d_alignment_set_station_equation` | alignment | — | alignmentSetStationEquation | no |
 | `civil3d_alignment_widen_transition` | alignment | — | alignmentWidenTransition | no |
-| `civil3d_intersection` | alignment | list, create, get | listIntersections, createIntersection, getIntersection | no |
-| `civil3d_intersection_create` | alignment | — | createIntersection | no |
+| `civil3d_intersection` | alignment | list, get | listIntersections, getIntersection | yes |
 | `civil3d_intersection_get` | alignment | — | getIntersection | yes |
 | `civil3d_intersection_list` | alignment | — | listIntersections | yes |
-| `civil3d_superelevation` | alignment | get, set, design_check, report | getSuperelevation, setSuperelevation, checkSuperelevationDesign, generateSuperelevationReport | no |
+| `civil3d_superelevation` | alignment | get, set, report | getSuperelevation, setSuperelevation, generateSuperelevationReport | no |
 | `civil3d_superelevation_design_check` | alignment | — | checkSuperelevationDesign | yes |
 | `civil3d_superelevation_get` | alignment | — | getSuperelevation | yes |
 | `civil3d_superelevation_report` | alignment | — | generateSuperelevationReport | no |
@@ -112,8 +110,7 @@ Generated from the runtime manifest for civil3d-mcp 1.2.1. Do not edit by hand.
 | `civil3d_pressure_pipe_add` | pipe | — | addPressurePipe | no |
 | `civil3d_pressure_pipe_get_properties` | pipe | — | getPressurePipeProperties | yes |
 | `civil3d_pressure_pipe_resize` | pipe | — | resizePressurePipe | no |
-| `civil3d_plan_production` | plan_production | sheet_set_list, sheet_set_get_info, sheet_set_create, sheet_add, sheet_get_properties, sheet_set_title_block, plan_profile_sheet_create, plan_profile_sheet_update_alignment, sheet_view_create, sheet_view_set_scale, sheet_publish_pdf, sheet_set_export | listSheetSets, getSheetSetInfo, createSheetSet, addSheet, getSheetProperties, setSheetTitleBlock, createPlanProfileSheet, updatePlanProfileSheetAlignment, createSheetView, setSheetViewScale, publishSheetPdf, exportSheetSet | no |
-| `civil3d_plan_profile_sheet_create` | plan_production | — | createPlanProfileSheet | no |
+| `civil3d_plan_production` | plan_production | sheet_set_list, sheet_set_get_info, sheet_set_create, sheet_add, sheet_get_properties, sheet_set_title_block, plan_profile_sheet_update_alignment, sheet_view_create, sheet_view_set_scale, sheet_publish_pdf, sheet_set_export | listSheetSets, getSheetSetInfo, createSheetSet, addSheet, getSheetProperties, setSheetTitleBlock, updatePlanProfileSheetAlignment, createSheetView, setSheetViewScale, publishSheetPdf, exportSheetSet | no |
 | `civil3d_plan_profile_sheet_update_alignment` | plan_production | — | updatePlanProfileSheetAlignment | no |
 | `civil3d_sheet_add` | plan_production | — | addSheet | no |
 | `civil3d_sheet_get_properties` | plan_production | — | getSheetProperties | yes |
@@ -157,16 +154,14 @@ Generated from the runtime manifest for civil3d-mcp 1.2.1. Do not edit by hand.
 | `civil3d_qc_check_surface` | qc | — | qcCheckSurface | yes |
 | `civil3d_qc_report_generate` | qc | — | qcReportGenerate | no |
 | `civil3d_qty_alignment_lengths` | quantity_takeoff | — | qtyAlignmentLengths | yes |
-| `civil3d_qty_corridor_volumes` | quantity_takeoff | — | qtyCorridorVolumes | yes |
 | `civil3d_qty_earthwork_summary` | quantity_takeoff | — | qtyEarthworkSummary | yes |
 | `civil3d_qty_export_to_csv` | quantity_takeoff | — | qtyExportToCsv | no |
-| `civil3d_qty_material_list_get` | quantity_takeoff | — | qtyMaterialListGet | yes |
 | `civil3d_qty_parcel_areas` | quantity_takeoff | — | qtyParcelAreas | yes |
 | `civil3d_qty_pipe_network_lengths` | quantity_takeoff | — | qtyPipeNetworkLengths | yes |
 | `civil3d_qty_point_count_by_group` | quantity_takeoff | — | qtyPointCountByGroup | yes |
 | `civil3d_qty_pressure_network_lengths` | quantity_takeoff | — | qtyPressureNetworkLengths | yes |
 | `civil3d_qty_surface_volume` | quantity_takeoff | — | qtySurfaceVolume | yes |
-| `civil3d_quantity_takeoff` | quantity_takeoff | corridor_volumes, surface_volume, pipe_network_lengths, pressure_network_lengths, parcel_areas, alignment_lengths, point_count_by_group, export_to_csv, material_list_get, earthwork_summary | qtyCorridorVolumes, qtySurfaceVolume, qtyPipeNetworkLengths, qtyPressureNetworkLengths, qtyParcelAreas, qtyAlignmentLengths, qtyPointCountByGroup, qtyExportToCsv, qtyMaterialListGet, qtyEarthworkSummary | no |
+| `civil3d_quantity_takeoff` | quantity_takeoff | surface_volume, pipe_network_lengths, pressure_network_lengths, parcel_areas, alignment_lengths, point_count_by_group, export_to_csv, earthwork_summary | qtySurfaceVolume, qtyPipeNetworkLengths, qtyPressureNetworkLengths, qtyParcelAreas, qtyAlignmentLengths, qtyPointCountByGroup, qtyExportToCsv, qtyEarthworkSummary | no |
 | `civil3d_section` | section | list_sample_lines, get_section_data, create_sample_lines, view_create, view_list, view_update_style, view_group_create, view_export | listSampleLineGroups, getSectionData, createSampleLines, createSectionViews, listSectionViews, updateSectionViewStyles, createSectionViewGroup, exportSectionData | no |
 | `civil3d_section_view_create` | section | — | createSectionViews | no |
 | `civil3d_section_view_export` | section | — | exportSectionData | no |
@@ -176,9 +171,8 @@ Generated from the runtime manifest for civil3d-mcp 1.2.1. Do not edit by hand.
 | `civil3d_sight_distance` | sight_distance | calculate, stopping_distance_check | calculateSightDistance, checkStoppingDistance | yes |
 | `civil3d_sight_distance_calculate` | sight_distance | — | calculateSightDistance | yes |
 | `civil3d_stopping_distance_check` | sight_distance | — | checkStoppingDistance | yes |
-| `civil3d_slope_analysis` | slope_analysis | geometry_calculate, stability_check | calculateSlopeGeometry, checkSlopeStability | yes |
+| `civil3d_slope_analysis` | slope_analysis | — | calculateSlopeGeometry | yes |
 | `civil3d_slope_geometry_calculate` | slope_analysis | — | calculateSlopeGeometry | yes |
-| `civil3d_slope_stability_check` | slope_analysis | — | checkSlopeStability | yes |
 | `civil3d_label` | standards | list, add, list_styles | listLabels, addLabel, listLabelStyles | no |
 | `civil3d_qc_check_drawing_standards` | standards | — | qcCheckDrawingStandards | yes |
 | `civil3d_qc_check_labels` | standards | — | qcCheckLabels | yes |
@@ -201,16 +195,12 @@ Generated from the runtime manifest for civil3d-mcp 1.2.1. Do not edit by hand.
 | `civil3d_surface_volume_calculate` | surface | — | calculateSurfaceVolume | yes |
 | `civil3d_surface_volume_report` | surface | — | getSurfaceVolumeReport | yes |
 | `civil3d_surface_watershed_add` | surface | — | addSurfaceWatershed | no |
-| `civil3d_survey` | survey | database_list, database_create, figure_list, figure_get, observation_list, network_adjust, figure_create, landxml_import | listSurveyDatabases, createSurveyDatabase, listSurveyFigures, getSurveyFigure, listSurveyObservations, adjustSurveyNetwork, createSurveyFigure, importSurveyLandXml | no |
-| `civil3d_survey_database_create` | survey | — | createSurveyDatabase | no |
+| `civil3d_survey` | survey | database_list, figure_list, figure_get, observation_list | listSurveyDatabases, listSurveyFigures, getSurveyFigure, listSurveyObservations | yes |
 | `civil3d_survey_database_list` | survey | — | listSurveyDatabases | yes |
-| `civil3d_survey_figure_create` | survey | — | createSurveyFigure | no |
 | `civil3d_survey_figure_get` | survey | — | getSurveyFigure | yes |
 | `civil3d_survey_figure_list` | survey | — | listSurveyFigures | yes |
-| `civil3d_survey_landxml_import` | survey | — | importSurveyLandXml | no |
-| `civil3d_survey_network_adjust` | survey | — | adjustSurveyNetwork | no |
 | `civil3d_survey_observation_list` | survey | — | listSurveyObservations | yes |
-| `civil3d_workflow` | workflow | corridor_qc_report, grading_surface_volume, surface_comparison_report, data_shortcut_publish_sync, data_shortcut_reference_sync, project_startup, project_reference_setup, drawing_readiness_audit, feature_line_to_grading, pipe_network_design, plan_production_publish, qc_fix_and_verify, survey_import_adjust_figures | corridorQcReportWorkflow, calculateSurfaceVolume, surfaceComparisonReportWorkflow, dataShortcutPublishSyncWorkflow, dataShortcutReferenceSyncWorkflow, projectStartupWorkflow, projectReferenceSetupWorkflow, drawingReadinessAuditWorkflow, featureLineToGradingWorkflow, getPipeNetwork, listPipePartsCatalog, resizePipeInNetwork, analyzePipeNetworkHydraulics, planProductionPublishWorkflow, qcFixAndVerifyWorkflow, importSurveyLandXml, listSurveyObservations, adjustSurveyNetwork, createSurveyFigure, listSurveyFigures | no |
+| `civil3d_workflow` | workflow | corridor_qc_report, grading_surface_volume, surface_comparison_report, data_shortcut_publish_sync, data_shortcut_reference_sync, project_startup, project_reference_setup, drawing_readiness_audit, feature_line_to_grading, pipe_network_design, plan_production_publish, qc_fix_and_verify | corridorQcReportWorkflow, calculateSurfaceVolume, surfaceComparisonReportWorkflow, dataShortcutPublishSyncWorkflow, dataShortcutReferenceSyncWorkflow, projectStartupWorkflow, projectReferenceSetupWorkflow, drawingReadinessAuditWorkflow, featureLineToGradingWorkflow, getPipeNetwork, listPipePartsCatalog, resizePipeInNetwork, analyzePipeNetworkHydraulics, planProductionPublishWorkflow, qcFixAndVerifyWorkflow | no |
 | `civil3d_workflow_corridor_qc_report` | workflow | — | corridorQcReportWorkflow | no |
 | `civil3d_workflow_data_shortcut_publish_sync` | workflow | — | dataShortcutPublishSyncWorkflow | no |
 | `civil3d_workflow_data_shortcut_reference_sync` | workflow | — | dataShortcutReferenceSyncWorkflow | no |
@@ -223,4 +213,3 @@ Generated from the runtime manifest for civil3d-mcp 1.2.1. Do not edit by hand.
 | `civil3d_workflow_project_startup` | workflow | — | projectStartupWorkflow | no |
 | `civil3d_workflow_qc_fix_and_verify` | workflow | — | qcFixAndVerifyWorkflow | no |
 | `civil3d_workflow_surface_comparison_report` | workflow | — | surfaceComparisonReportWorkflow | yes |
-| `civil3d_workflow_survey_import_adjust_figures` | workflow | — | importSurveyLandXml, listSurveyObservations, adjustSurveyNetwork, createSurveyFigure, listSurveyFigures | no |

@@ -9,6 +9,7 @@ export interface ApprovalTarget {
   action: string;
   capabilities: ToolCapability[];
   safeForRetry: boolean;
+  requiresActiveDrawing?: boolean;
 }
 
 interface ApprovalGrant {
@@ -32,6 +33,7 @@ export class ApprovalValidationError extends Error {}
 export type DrawingFingerprintProvider = () => Promise<string>;
 
 const APPROVAL_TOKEN_TTL_MS = 5 * 60 * 1000;
+const NO_ACTIVE_DRAWING_FINGERPRINT = "no-active-drawing";
 const MUTATING_CAPABILITIES = new Set<ToolCapability>([
   "create",
   "edit",
@@ -86,6 +88,15 @@ export async function getActiveDrawingFingerprint(): Promise<string> {
   return createHash("sha256").update(stableJson(drawingInfo)).digest("hex");
 }
 
+function isNoActiveDrawingError(error: unknown): boolean {
+  const code = error && typeof error === "object" && "code" in error
+    ? String(error.code)
+    : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return code === "CIVIL3D.NO_DRAWING" || code === "CIVIL3D.NO_ACTIVE_DRAWING" ||
+    /no active (?:civil 3d )?drawing|no active (?:civil 3d )?document/i.test(message);
+}
+
 export class ApprovalPolicyService {
   private readonly grants = new Map<string, ApprovalGrant>();
 
@@ -93,6 +104,17 @@ export class ApprovalPolicyService {
     private readonly drawingFingerprint: DrawingFingerprintProvider = getActiveDrawingFingerprint,
     private readonly now: () => number = () => Date.now(),
   ) {}
+
+  private async fingerprintFor(target: ApprovalTarget): Promise<string> {
+    try {
+      return await this.drawingFingerprint();
+    } catch (error) {
+      if (target.requiresActiveDrawing === false && isNoActiveDrawingError(error)) {
+        return NO_ACTIVE_DRAWING_FINGERPRINT;
+      }
+      throw error;
+    }
+  }
 
   public async requestApproval(
     target: ApprovalTarget,
@@ -105,7 +127,7 @@ export class ApprovalPolicyService {
       );
     }
 
-    const drawingFingerprint = await this.drawingFingerprint();
+    const drawingFingerprint = await this.fingerprintFor(target);
     const expiresAt = this.now() + ttlMs;
     const approvalToken = randomUUID();
     this.grants.set(approvalToken, {
@@ -155,7 +177,7 @@ export class ApprovalPolicyService {
       throw new ApprovalValidationError("Approval token does not match this tool action and its parameters.");
     }
 
-    const activeDrawingFingerprint = await this.drawingFingerprint();
+    const activeDrawingFingerprint = await this.fingerprintFor(target);
     if (grant.drawingFingerprint !== activeDrawingFingerprint) {
       throw new ApprovalValidationError("The active drawing changed after approval. Request approval for the current drawing.");
     }

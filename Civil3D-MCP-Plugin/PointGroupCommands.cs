@@ -260,7 +260,15 @@ public static class PointGroupCommands
       return;
     }
 
-    var query = group.GetQuery() as StandardPointGroupQuery ?? new StandardPointGroupQuery();
+    var existingQuery = group.GetQuery();
+    if (existingQuery is not null && existingQuery is not StandardPointGroupQuery)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.CONFLICT",
+        $"Point group '{group.Name}' uses a custom query. Standard filters were not applied because doing so would discard its existing QueryString criteria.");
+    }
+
+    var query = existingQuery as StandardPointGroupQuery ?? new StandardPointGroupQuery();
     if (includeNumbers != null) query.IncludeNumbers = includeNumbers;
     if (excludeNumbers != null) query.ExcludeNumbers = excludeNumbers;
     if (includeDescriptions != null) query.IncludeRawDescriptions = includeDescriptions;

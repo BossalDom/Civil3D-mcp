@@ -34,5 +34,6 @@ jobs:
         shell: powershell
         env:
           CIVIL3D_LIVE_SMOKE_CONFIRM: DISPOSABLE_DRAWING
-          CIVIL3D_LIVE_SMOKE_QC_PATH: ${{ runner.temp }}\civil3d-mcp-live-qc.txt
-        run: node ./scripts/live-host-smoke.mjs
+        run: |
+          $env:CIVIL3D_LIVE_SMOKE_QC_PATH = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'civil3d-mcp-live-qc.txt'
+          node ./scripts/live-host-smoke.mjs

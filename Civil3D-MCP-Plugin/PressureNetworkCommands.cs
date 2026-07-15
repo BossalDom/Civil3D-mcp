@@ -419,6 +419,16 @@ public static class PressureNetworkCommands
 
   private static IEnumerable<ObjectId> GetPressureNetworkIds(object civilDoc)
   {
+    if (civilDoc is CivilDocument typedDocument)
+    {
+      foreach (ObjectId objectId in typedDocument.GetPressurePipeNetworkIds())
+      {
+        if (objectId != ObjectId.Null)
+          yield return objectId;
+      }
+      yield break;
+    }
+
     var candidates = new object?[]
     {
       CivilObjectUtils.InvokeMethod(civilDoc, "GetPressureNetworkIds"),

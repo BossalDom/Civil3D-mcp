@@ -73,7 +73,7 @@ public static class ParcelEditingCommands
         ["parcels"] = parcels,
         ["units"] = new Dictionary<string, object?>
         {
-          ["area"] = "sqft",
+          ["area"] = $"{CivilObjectUtils.LinearUnits(database)}²",
           ["length"] = CivilObjectUtils.LinearUnits(database),
         },
       };
@@ -432,13 +432,22 @@ public static class ParcelEditingCommands
 
   private static IEnumerable<ObjectId> EnumerateParcelIds(Site site, Transaction transaction)
   {
+    var documentedIds = new HashSet<ObjectId>();
+    foreach (ObjectId objectId in site.GetParcelIds())
+    {
+      if (objectId != ObjectId.Null && documentedIds.Add(objectId))
+        yield return objectId;
+    }
+
+    // Compatibility fallbacks are retained for older host variations, but
+    // de-duplicate anything already returned by the documented 2026 API.
     foreach (var memberName in new[] { "Parcels", "ParcelCollection", "ParcelIds" })
     {
       var value = GetNamedMember(site, memberName) ?? CivilObjectUtils.InvokeMethod(site, memberName);
 
       foreach (var objectId in CivilObjectUtils.ToObjectIds(value))
       {
-        if (objectId != ObjectId.Null)
+        if (objectId != ObjectId.Null && documentedIds.Add(objectId))
           yield return objectId;
       }
 
@@ -448,11 +457,11 @@ public static class ParcelEditingCommands
         {
           if (item is Parcel parcel)
           {
-            yield return parcel.ObjectId;
+            if (documentedIds.Add(parcel.ObjectId)) yield return parcel.ObjectId;
           }
           else if (item is Autodesk.AutoCAD.DatabaseServices.DBObject dbObject)
           {
-            yield return dbObject.ObjectId;
+            if (documentedIds.Add(dbObject.ObjectId)) yield return dbObject.ObjectId;
           }
         }
       }

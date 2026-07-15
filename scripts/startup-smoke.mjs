@@ -13,7 +13,11 @@ try {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     try {
-      response = await fetch(`http://127.0.0.1:${port}/health`);
+      response = await fetch(`http://127.0.0.1:${port}/health`, {
+        headers: process.env.MCP_HTTP_TOKEN
+          ? { Authorization: `Bearer ${process.env.MCP_HTTP_TOKEN}` }
+          : undefined,
+      });
       if (response.ok) break;
     } catch { /* server is still starting */ }
   }

@@ -1,13 +1,11 @@
 using System.Text;
-using Autodesk.AutoCAD.ApplicationServices;
-using App = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace Civil3DMcpPlugin;
 
 /// <summary>
 /// Lightweight plugin-side logger that writes timestamped entries to a rotating
 /// log file under <c>%LOCALAPPDATA%\Civil3DMcpPlugin\plugin.log</c> and
-/// optionally mirrors warnings and errors to the Civil 3D command line.
+  /// mirrors entries to the debugger without calling host APIs from worker threads.
 ///
 /// The logger is deliberately dependency-free: a single background writer
 /// serializes file writes without blocking Civil 3D. All methods are safe to
@@ -88,10 +86,6 @@ public static class PluginLog
 
     TryAppendToFile(text, exception);
 
-    if (level >= Level.Warn)
-    {
-      TryWriteToEditor(text);
-    }
   }
 
   private static void TryAppendToFile(string text, Exception? exception)
@@ -155,19 +149,6 @@ public static class PluginLog
     catch
     {
       // Best-effort rotation; truncating failures are not worth escalating.
-    }
-  }
-
-  private static void TryWriteToEditor(string text)
-  {
-    try
-    {
-      var doc = App.DocumentManager?.MdiActiveDocument;
-      doc?.Editor?.WriteMessage($"\n[Civil3D MCP] {text}");
-    }
-    catch
-    {
-      // Editor may not be available during plugin init/teardown.
     }
   }
 

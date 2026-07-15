@@ -74,8 +74,6 @@ const SectionViewCreateArgsSchema = z.object({
   rightOffset: z.number().nonnegative().optional(),
   stationStart: z.number().optional(),
   stationEnd: z.number().optional(),
-  rows: z.number().int().positive().optional(),
-  gapBetweenViews: z.number().nonnegative().optional(),
 });
 
 const SectionViewListArgsSchema = z.object({
@@ -100,10 +98,6 @@ const SectionViewGroupCreateArgsSchema = z.object({
   insertionPoint: z.tuple([z.number(), z.number()]),
   style: z.string().optional(),
   plotStyle: z.string().optional(),
-  rows: z.number().int().positive().optional(),
-  columns: z.number().int().positive().optional(),
-  gapX: z.number().nonnegative().optional(),
-  gapY: z.number().nonnegative().optional(),
 });
 
 const SectionViewExportArgsSchema = z.object({
@@ -113,7 +107,6 @@ const SectionViewExportArgsSchema = z.object({
   outputPath: z.string(),
   overwrite: z.boolean().optional(),
   includeElevations: z.boolean().optional(),
-  includeMaterials: z.boolean().optional(),
   stationStart: z.number().optional(),
   stationEnd: z.number().optional(),
 });
@@ -147,17 +140,11 @@ const canonicalSectionInputShape = {
   rightOffset: z.number().nonnegative().optional(),
   stationStart: z.number().optional(),
   stationEnd: z.number().optional(),
-  rows: z.number().int().positive().optional(),
-  gapBetweenViews: z.number().nonnegative().optional(),
   applyToAll: z.boolean().optional(),
   plotStyle: z.string().optional(),
-  columns: z.number().int().positive().optional(),
-  gapX: z.number().nonnegative().optional(),
-  gapY: z.number().nonnegative().optional(),
   outputPath: z.string().optional(),
   overwrite: z.boolean().optional(),
   includeElevations: z.boolean().optional(),
-  includeMaterials: z.boolean().optional(),
 };
 
 // ─── Domain definition ────────────────────────────────────────────────────────
@@ -237,8 +224,6 @@ export const SECTION_DOMAIN_DEFINITION: DomainToolDefinition = {
             rightOffset: args.rightOffset ?? null,
             stationStart: args.stationStart ?? null,
             stationEnd: args.stationEnd ?? null,
-            rows: args.rows ?? null,
-            gapBetweenViews: args.gapBetweenViews ?? null,
           });
         },
       ),
@@ -294,10 +279,6 @@ export const SECTION_DOMAIN_DEFINITION: DomainToolDefinition = {
             insertionY: pt[1],
             style: args.style ?? null,
             plotStyle: args.plotStyle ?? null,
-            rows: args.rows ?? null,
-            columns: args.columns ?? null,
-            gapX: args.gapX ?? null,
-            gapY: args.gapY ?? null,
           });
         },
       ),
@@ -317,7 +298,6 @@ export const SECTION_DOMAIN_DEFINITION: DomainToolDefinition = {
           outputPath: args.outputPath,
           overwrite: args.overwrite ?? false,
           includeElevations: args.includeElevations ?? true,
-          includeMaterials: args.includeMaterials ?? false,
           stationStart: args.stationStart ?? null,
           stationEnd: args.stationEnd ?? null,
         }),
@@ -359,8 +339,6 @@ export const SECTION_DOMAIN_DEFINITION: DomainToolDefinition = {
         rightOffset: z.number().nonnegative().optional(),
         stationStart: z.number().optional(),
         stationEnd: z.number().optional(),
-        rows: z.number().int().positive().optional(),
-        gapBetweenViews: z.number().nonnegative().optional(),
       },
       supportedActions: ["view_create"],
       resolveAction: (rawArgs) => ({
@@ -376,8 +354,6 @@ export const SECTION_DOMAIN_DEFINITION: DomainToolDefinition = {
           rightOffset: rawArgs.rightOffset,
           stationStart: rawArgs.stationStart,
           stationEnd: rawArgs.stationEnd,
-          rows: rawArgs.rows,
-          gapBetweenViews: rawArgs.gapBetweenViews,
         },
       }),
     },
@@ -426,17 +402,13 @@ export const SECTION_DOMAIN_DEFINITION: DomainToolDefinition = {
     {
       toolName: "civil3d_section_view_group_create",
       displayName: "Civil 3D Section View Group Create",
-      description: "Create a Civil 3D section view group — a multi-row grid layout of section views for all stations in a sample line group.",
+      description: "Creates section views for all stations in a sample line group using the drawing's Civil 3D draft-placement settings.",
       inputShape: {
         alignmentName: z.string(),
         sampleLineGroupName: z.string(),
         insertionPoint: z.tuple([z.number(), z.number()]),
         style: z.string().optional(),
         plotStyle: z.string().optional(),
-        rows: z.number().int().positive().optional(),
-        columns: z.number().int().positive().optional(),
-        gapX: z.number().nonnegative().optional(),
-        gapY: z.number().nonnegative().optional(),
       },
       supportedActions: ["view_group_create"],
       resolveAction: (rawArgs) => ({
@@ -448,10 +420,6 @@ export const SECTION_DOMAIN_DEFINITION: DomainToolDefinition = {
           insertionPoint: rawArgs.insertionPoint,
           style: rawArgs.style,
           plotStyle: rawArgs.plotStyle,
-          rows: rawArgs.rows,
-          columns: rawArgs.columns,
-          gapX: rawArgs.gapX,
-          gapY: rawArgs.gapY,
         },
       }),
     },
@@ -465,7 +433,6 @@ export const SECTION_DOMAIN_DEFINITION: DomainToolDefinition = {
         outputPath: z.string(),
         overwrite: z.boolean().optional(),
         includeElevations: z.boolean().optional(),
-        includeMaterials: z.boolean().optional(),
         stationStart: z.number().optional(),
         stationEnd: z.number().optional(),
       },
@@ -479,7 +446,6 @@ export const SECTION_DOMAIN_DEFINITION: DomainToolDefinition = {
           outputPath: rawArgs.outputPath,
           overwrite: rawArgs.overwrite,
           includeElevations: rawArgs.includeElevations,
-          includeMaterials: rawArgs.includeMaterials,
           stationStart: rawArgs.stationStart,
           stationEnd: rawArgs.stationEnd,
         },

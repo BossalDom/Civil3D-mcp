@@ -88,9 +88,14 @@ export async function executeRegisteredTool(
   if (mcpResult?.isError) {
     const errorText =
       mcpResult.content?.[0]?.text ?? `Tool '${toolName}' returned an error`;
+    if (!mcpResult.errorCode) {
+      // Preserve connection/unavailability errors for the HTTP bridge's
+      // message-based classifier instead of relabeling them as internal 500s.
+      throw new Error(errorText);
+    }
     throw new Civil3DRpcError(
       errorText,
-      mcpResult.errorCode ?? "CIVIL3D.INTERNAL_ERROR",
+      mcpResult.errorCode,
       mcpResult.rpcCode ?? -32000,
     );
   }

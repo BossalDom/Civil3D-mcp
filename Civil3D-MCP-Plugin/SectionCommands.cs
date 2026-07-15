@@ -5,6 +5,8 @@ using Autodesk.AutoCAD.Geometry;
 using Autodesk.Civil.ApplicationServices;
 using Autodesk.Civil.DatabaseServices;
 using System.Linq;
+using System.Globalization;
+using System.Text;
 
 namespace Civil3DMcpPlugin;
 
@@ -392,14 +394,64 @@ public static class SectionCommands
     var stationStart = PluginRuntime.GetOptionalDouble(parameters, "stationStart");
     var stationEnd = PluginRuntime.GetOptionalDouble(parameters, "stationEnd");
 
-    _ = FileBoundary.ResolveExportPath(
-      outputPath,
-      PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false,
-      ".csv");
+    var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
+    if (includeMaterials)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        "Section material quantities are not exposed by this export path. Set includeMaterials=false; no file was written.");
+    }
 
-    throw new JsonRpcDispatchException(
-      "CIVIL3D.API_ERROR",
-      "Civil 3D 2026 does not expose a section-view CSV export method. No CSV with fabricated offsets, elevations, or materials was written.");
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
+      var group = FindSampleLineGroup(alignment, transaction, sampleLineGroupName);
+      var csv = new StringBuilder("Station,Source,Offset");
+      if (includeElevations) csv.Append(",Elevation");
+      csv.AppendLine();
+      var rowsWritten = 0;
+
+      foreach (ObjectId sampleLineId in group.GetSampleLineIds())
+      {
+        var sampleLine = CivilObjectUtils.GetRequiredObject<SampleLine>(transaction, sampleLineId, OpenMode.ForRead);
+        if (stationStart.HasValue && sampleLine.Station < stationStart.Value) continue;
+        if (stationEnd.HasValue && sampleLine.Station > stationEnd.Value) continue;
+
+        foreach (ObjectId sectionId in sampleLine.GetSectionIds())
+        {
+          var section = CivilObjectUtils.GetRequiredObject<Autodesk.Civil.DatabaseServices.Section>(transaction, sectionId, OpenMode.ForRead);
+          foreach (SectionPoint point in section.SectionPoints)
+          {
+            csv.Append(sampleLine.Station.ToString("G17", CultureInfo.InvariantCulture))
+              .Append(',').Append(EscapeCsv(section.SourceName))
+              .Append(',').Append(point.Location.X.ToString("G17", CultureInfo.InvariantCulture));
+            if (includeElevations)
+              csv.Append(',').Append(point.Location.Y.ToString("G17", CultureInfo.InvariantCulture));
+            csv.AppendLine();
+            rowsWritten++;
+          }
+        }
+      }
+
+      var canonicalPath = FileBoundary.WriteAllTextAtomic(
+        outputPath, csv.ToString(), Encoding.UTF8, overwrite, ".csv");
+      return new Dictionary<string, object?>
+      {
+        ["alignmentName"] = alignment.Name,
+        ["sampleLineGroupName"] = group.Name,
+        ["outputPath"] = canonicalPath,
+        ["rowsWritten"] = rowsWritten,
+        ["includeElevations"] = includeElevations,
+        ["units"] = CivilObjectUtils.LinearUnits(database),
+      };
+    });
+  }
+
+  private static string EscapeCsv(string value)
+  {
+    if (value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r'))
+      return $"\"{value.Replace("\"", "\"\"")}\"";
+    return value;
   }
 
   private static SampleLineGroup FindSampleLineGroup(Alignment alignment, Transaction transaction, string sampleLineGroupName)

@@ -228,13 +228,11 @@ public static class ProfileCommands
     return entities;
   }
 
-  private static (double? Min, double? Max) GetElevationExtents(Profile profile)
+  private static (double Min, double Max) GetElevationExtents(Profile profile)
   {
-    var elevations = profile.Entities
-      .SelectMany(entity => new[] { entity.StartElevation, entity.EndElevation })
-      .ToList();
-
-    return elevations.Count == 0 ? (null, null) : (elevations.Min(), elevations.Max());
+    // Civil 3D calculates profile-wide extents, including interior vertical
+    // curve extrema and the numeric fallback required for empty layouts.
+    return (profile.ElevationMin, profile.ElevationMax);
   }
 
   private static int CountPvis(Profile profile)

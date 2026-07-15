@@ -33,6 +33,7 @@ public static class PluginRuntime
   private static readonly AsyncLocal<string?> CurrentRequestOperation = new();
   private static readonly AsyncLocal<string?> CurrentRequestId = new();
   private static readonly AsyncLocal<CancellationToken> CurrentRequestCancellation = new();
+  private static readonly AsyncLocal<string?> CurrentExpectedDrawingIdentity = new();
   private const int MaxQueuedHostOperations = 64;
   private static int _queueDepth;
   private static int _activeOperations;
@@ -173,27 +174,33 @@ public static class PluginRuntime
   internal static string? GetActiveDrawingIdentity()
   {
     var document = App.DocumentManager.MdiActiveDocument;
-    if (document == null)
-    {
-      return null;
-    }
+    return GetDrawingIdentity(document);
+  }
 
+  internal static string? GetDrawingIdentity(Autodesk.AutoCAD.ApplicationServices.Document? document)
+  {
+    if (document == null) return null;
     var fileName = document.Database.Filename;
     return string.IsNullOrWhiteSpace(fileName) ? document.Name : fileName;
   }
+
+  internal static string? GetExpectedDrawingIdentity() => CurrentExpectedDrawingIdentity.Value;
 
   internal static async Task<T> RunWithRequestContextAsync<T>(
     string operation,
     string requestId,
     CancellationToken cancellationToken,
+    string? expectedDrawingIdentity,
     Func<Task<T>> action)
   {
     var previousOperation = CurrentRequestOperation.Value;
     var previousRequestId = CurrentRequestId.Value;
     var previousCancellation = CurrentRequestCancellation.Value;
+    var previousExpectedDrawingIdentity = CurrentExpectedDrawingIdentity.Value;
     CurrentRequestOperation.Value = operation;
     CurrentRequestId.Value = requestId;
     CurrentRequestCancellation.Value = cancellationToken;
+    CurrentExpectedDrawingIdentity.Value = expectedDrawingIdentity;
     try
     {
       return await action();
@@ -203,6 +210,7 @@ public static class PluginRuntime
       CurrentRequestOperation.Value = previousOperation;
       CurrentRequestId.Value = previousRequestId;
       CurrentRequestCancellation.Value = previousCancellation;
+      CurrentExpectedDrawingIdentity.Value = previousExpectedDrawingIdentity;
     }
   }
 

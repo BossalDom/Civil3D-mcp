@@ -71,6 +71,8 @@ try
 
   var cancelledJob = JobRegistry.Create("publish_sheet_pdf");
   JobRegistry.Cancel(cancelledJob.JobId);
+  Assert(JobRegistry.Get(cancelledJob.JobId).State == "running" && JobRegistry.Get(cancelledJob.JobId).CancellationRequested, "Cancellation request was not retained while work remained in flight.");
+  JobRegistry.AcknowledgeCancellation(cancelledJob.JobId);
   Assert(JobRegistry.Get(cancelledJob.JobId).State == "cancelled", "Cancelled job state was invalid.");
 
   var stats = JobRegistry.GetStats();
@@ -82,7 +84,7 @@ try
     var raceJob = JobRegistry.Create("Race test");
     await Task.WhenAll(
       Task.Run(() => JobRegistry.Complete(raceJob.JobId, new { ok = true })),
-      Task.Run(() => JobRegistry.Cancel(raceJob.JobId)));
+      Task.Run(() => { JobRegistry.Cancel(raceJob.JobId); JobRegistry.AcknowledgeCancellation(raceJob.JobId); }));
     var terminalRaceJob = JobRegistry.Get(raceJob.JobId);
     Assert(terminalRaceJob.State is "completed" or "cancelled", "Racing terminal transitions produced an invalid job state.");
     Assert(terminalRaceJob.CompletedAt.HasValue && terminalRaceJob.DurationMs is >= 0, "Racing terminal transition lost timing telemetry.");

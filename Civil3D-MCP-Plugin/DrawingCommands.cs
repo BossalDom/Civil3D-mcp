@@ -111,7 +111,11 @@ public static class DrawingCommands
         throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "saveDrawing requires 'saveAs' when the drawing has not been saved yet.");
       }
 
-      targetPath = FileBoundary.ResolveExportPath(targetPath, overwrite, ".dwg");
+      // Saving the active drawing is not an export conflict: its current file
+      // necessarily exists. Boundary/overwrite checks apply only to Save As.
+      targetPath = string.IsNullOrWhiteSpace(saveAs)
+        ? Path.GetFullPath(targetPath)
+        : FileBoundary.ResolveExportPath(targetPath, overwrite, ".dwg");
       database.SaveAs(targetPath, true, DwgVersion.Current, database.SecurityParameters);
 
       return new Dictionary<string, object?>

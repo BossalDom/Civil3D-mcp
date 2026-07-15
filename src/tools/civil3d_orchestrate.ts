@@ -415,7 +415,7 @@ function buildContextAwareAdvice(intent: ReturnType<typeof routeIntent>, project
     };
   }
 
-  if (intent.match.intent === "calculate_slope_geometry" || intent.match.intent === "check_slope_stability") {
+  if (intent.match.intent === "calculate_slope_geometry") {
     return {
       prerequisitesSatisfied: hasAlignments,
       suggestions: [

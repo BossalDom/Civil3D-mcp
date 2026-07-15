@@ -75,11 +75,11 @@ const CorridorVolumesResponseSchema = z.object({
   cutVolume: z.number(),
   fillVolume: z.number(),
   netVolume: z.number(),
-  cutArea: z.number(),
-  fillArea: z.number(),
+  cutArea: z.number().nullable().optional(),
+  fillArea: z.number().nullable().optional(),
   units: z.object({
     volume: z.string(),
-    area: z.string(),
+    area: z.string().optional(),
   }),
 });
 

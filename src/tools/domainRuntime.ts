@@ -1,6 +1,6 @@
 import { z, type ZodRawShape, type ZodTypeAny } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { approvalPolicy, hasApprovalRisk } from "./approvalPolicy.js";
+import { approvalPolicy, getActiveDrawingFingerprint, hasApprovalRisk } from "./approvalPolicy.js";
 import { captureToolHandler } from "./toolHandlerRegistry.js";
 import { maybeStoreReportResource } from "./reportResourceStore.js";
 import { idempotencyStore } from "./idempotencyStore.js";
@@ -165,6 +165,7 @@ async function executeExposure(
         action: actionName,
         capabilities: actionDefinition.capabilities,
         safeForRetry: actionDefinition.safeForRetry,
+        requiresActiveDrawing: actionDefinition.requiresActiveDrawing,
       },
       rawArgs,
     );
@@ -201,8 +202,11 @@ async function executeExposure(
   const signature = { ...rawArgs };
   delete signature.approvalToken;
   delete signature.idempotencyKey;
+  const drawingScope = actionDefinition.requiresActiveDrawing
+    ? await getActiveDrawingFingerprint()
+    : "drawing-independent";
   return idempotencyStore.execute(
-    `${exposure.toolName}:${actionName}`,
+    `${exposure.toolName}:${actionName}:${drawingScope}`,
     idempotencyKey,
     signature,
     executeOnce,

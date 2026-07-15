@@ -20,10 +20,9 @@ public static class StmCommands
     var filePath = PluginRuntime.GetOptionalString(parameters, "filePath");
     if (!string.IsNullOrWhiteSpace(filePath))
     {
-      filePath = FileBoundary.ResolveExportPath(
-        filePath,
-        PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false,
-        ".stm");
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        "ExportSSA is an interactive dialog and cannot bind a caller-supplied filePath. Omit filePath and choose the destination in Civil 3D.");
     }
 
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
@@ -46,9 +45,7 @@ public static class StmCommands
       {
         ["command"] = "ExportSSA",
         ["status"] = "initiated",
-        ["message"] = filePath != null
-          ? $"ExportSSA dialog opened. Save the .STM file to: {filePath}"
-          : "ExportSSA dialog opened. Choose a location to save the .STM file.",
+        ["message"] = "ExportSSA dialog opened. Choose a location to save the .STM file.",
         ["notes"] = new List<string>
         {
           "The ExportSSA command opens a dialog for exporting pipe network and catchment data to a Hydraflow Storm Sewers (.STM) file.",
@@ -67,7 +64,9 @@ public static class StmCommands
     var filePath = PluginRuntime.GetOptionalString(parameters, "filePath");
     if (!string.IsNullOrWhiteSpace(filePath))
     {
-      filePath = FileBoundary.ResolveImportPath(filePath, ".stm");
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        "ImportSSA is an interactive dialog and cannot bind a caller-supplied filePath. Omit filePath and choose the source in Civil 3D.");
     }
 
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
@@ -89,9 +88,7 @@ public static class StmCommands
       {
         ["command"] = "ImportSSA",
         ["status"] = "initiated",
-        ["message"] = filePath != null
-          ? $"ImportSSA dialog opened. Import the .STM file from: {filePath}"
-          : "ImportSSA dialog opened. Select the .STM file to import.",
+        ["message"] = "ImportSSA dialog opened. Select the .STM file to import.",
         ["notes"] = new List<string>
         {
           "The ImportSSA command opens a dialog for importing Hydraflow Storm Sewers (.STM) analysis results back into Civil 3D.",

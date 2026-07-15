@@ -42,6 +42,7 @@ public static class JobCommands
           pluginMethod,
           $"{requestId ?? "job"}:job:{job.JobId}",
           cancellationToken,
+          job.DrawingIdentity,
           async () =>
           {
             // Keep the queued state observable long enough for a caller to
@@ -51,15 +52,19 @@ public static class JobCommands
             JobRegistry.Progress(job.JobId, 10, $"Starting {operation}", null);
             PluginLog.Info("Job", $"Starting {operation} (job {job.JobId}, request {requestId ?? "none"}).");
             var result = await CommandDispatcher.DispatchAsync(pluginMethod, operationParameters, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            JobRegistry.Complete(job.JobId, result, ExtractWarnings(result));
+            var warnings = ExtractWarnings(result).ToList();
+            if (cancellationToken.IsCancellationRequested)
+            {
+              warnings.Add("Cancellation was requested after non-interruptible Civil 3D host work began; the committed result is reported as completed.");
+            }
+            JobRegistry.Complete(job.JobId, result, warnings);
             PluginLog.Info("Job", $"Completed {operation} (job {job.JobId}).");
             return result;
           });
       }
       catch (OperationCanceledException)
       {
-        JobRegistry.Cancel(job.JobId);
+        JobRegistry.AcknowledgeCancellation(job.JobId);
         PluginLog.Info("Job", $"Cancelled {operation} (job {job.JobId}).");
       }
       catch (JsonRpcDispatchException ex)
@@ -136,6 +141,7 @@ public static class JobCommands
       ["requestId"] = job.RequestId,
       ["drawingIdentity"] = job.DrawingIdentity,
       ["failureCategory"] = job.FailureCategory,
+      ["cancellationRequested"] = job.CancellationRequested,
       ["warnings"] = job.Warnings.ToArray(),
       ["registry"] = new Dictionary<string, object?>
       {

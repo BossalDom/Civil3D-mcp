@@ -230,6 +230,12 @@ public static class SurfaceCommands
     var name = PluginRuntime.GetRequiredString(parameters, "name");
     var description = PluginRuntime.GetOptionalString(parameters, "description");
     var breaklineType = PluginRuntime.GetOptionalString(parameters, "breaklineType") ?? "standard";
+    if (!string.Equals(breaklineType, "standard", StringComparison.OrdinalIgnoreCase))
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        $"Breakline type '{breaklineType}' is not supported by this endpoint. No surface was modified; use breaklineType='standard'.");
+    }
     var points = ParseRequiredPoint3dArray(parameters, "points", "addSurfaceBreakline requires at least two points.");
     if (points.Count < 2)
     {
@@ -1092,13 +1098,24 @@ public static class SurfaceCommands
     {
       throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Contour intervals must be greater than zero.");
     }
-    var contours = surface switch
+    var minorContours = surface switch
     {
       TinSurface tinSurface => tinSurface.ExtractContours(minorInterval),
       GridSurface gridSurface => gridSurface.ExtractContours(minorInterval),
       _ => throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", $"Contour extraction is not supported for surface type '{surface.GetType().Name}'."),
     };
-    return contours.Cast<ObjectId>().ToList();
+    var extracted = minorContours.Cast<ObjectId>().ToList();
+    if (Math.Abs(majorInterval - minorInterval) > 1.0e-9)
+    {
+      var majorContours = surface switch
+      {
+        TinSurface tinSurface => tinSurface.ExtractContours(majorInterval),
+        GridSurface gridSurface => gridSurface.ExtractContours(majorInterval),
+        _ => throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", $"Contour extraction is not supported for surface type '{surface.GetType().Name}'."),
+      };
+      extracted.AddRange(majorContours.Cast<ObjectId>());
+    }
+    return extracted;
   }
 
   private static VolumeSurfaceProperties GetVolumeProperties(Autodesk.Civil.ApplicationServices.CivilDocument civilDoc, Transaction transaction, CivilSurface baseSurface, CivilSurface comparisonSurface)

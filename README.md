@@ -434,9 +434,8 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 > *"Trace the flow path from coordinate (5000, 3200) and estimate the peak runoff using the Rational Method."*
 > → `civil3d_hydrology` with `action: "watershed_runoff_workflow"`
 
-> *"Create a Plan/Profile sheet set for alignment 'Mainline' and export to PDF."*
-> → `civil3d_plan_production` with `action: "plan_profile_sheet_create"`, then
-> `civil3d_workflow` with `action: "plan_production_publish"`
+> *"Publish the existing Plan Production sheet set to PDF."*
+> → `civil3d_workflow` with `action: "plan_production_publish"`
 
 > *"Size the storm drain network for a 10-year storm and check all pipe velocities."*
 > → `civil3d_pipe` with `action: "size_network"`, then `action: "hydraulic_analysis"`
@@ -482,7 +481,7 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 </details>
 
 <details>
-<summary><strong>Alignment (10 tools)</strong></summary>
+<summary><strong>Alignment (9 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -490,7 +489,6 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 | `civil3d_alignment_report` | Builds structured alignment geometry report |
 | `civil3d_alignment_get_station_offset` | Returns station/offset of an XY point relative to an alignment |
 | `civil3d_alignment_add_tangent` | Appends a fixed tangent entity to an alignment |
-| `civil3d_alignment_add_curve` | Appends a fixed horizontal curve to an alignment |
 | `civil3d_alignment_add_spiral` | Appends a spiral (transition curve) to an alignment |
 | `civil3d_alignment_delete_entity` | Deletes a tangent/curve/spiral entity by index |
 | `civil3d_alignment_offset_create` | Creates a new offset alignment at a constant distance |
@@ -575,18 +573,17 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 | `civil3d_section_view_create` | Create section views for a sample line group |
 | `civil3d_section_view_list` | List section views in the drawing |
 | `civil3d_section_view_update_style` | Update display/band set style on existing section views |
-| `civil3d_section_view_group_create` | Create a multi-row grid layout of section views |
-| `civil3d_section_view_export` | Export section data to CSV/text (offsets, elevations, materials) |
+| `civil3d_section_view_group_create` | Create section views using the drawing's draft-placement settings |
+| `civil3d_section_view_export` | Export section station, source, offset, and elevation data to CSV |
 
 </details>
 
 <details>
-<summary><strong>Intersection Design (3 tools)</strong></summary>
+<summary><strong>Intersection Design (2 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `civil3d_intersection_list` | List all intersections in the drawing |
-| `civil3d_intersection_create` | Create an intersection between two road alignments |
 | `civil3d_intersection_get` | Get detailed properties of an intersection |
 
 </details>
@@ -628,7 +625,7 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 </details>
 
 <details>
-<summary><strong>COGO & Survey (9 tools)</strong></summary>
+<summary><strong>COGO & Survey (8 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -638,7 +635,6 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 | `civil3d_cogo_traverse` | Solve a traverse from start point through bearing/distance courses |
 | `civil3d_coordinate_system` | Coordinate system info and coordinate transformations |
 | `civil3d_survey_database_list` | List all survey databases |
-| `civil3d_survey_database_create` | Create a new survey database |
 | `civil3d_survey_figure_list` | List all survey figures |
 | `civil3d_survey_figure_get` | Get 3D vertex data for a specific survey figure |
 
@@ -679,7 +675,7 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 </details>
 
 <details>
-<summary><strong>Plan Production / Sheets (12 tools)</strong></summary>
+<summary><strong>Plan Production / Sheets (11 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -693,7 +689,6 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 | `civil3d_sheet_publish_pdf` | Publish sheet layouts to a PDF file |
 | `civil3d_sheet_view_create` | Create a viewport/view on a sheet layout |
 | `civil3d_sheet_view_set_scale` | Update the scale of a viewport |
-| `civil3d_plan_profile_sheet_create` | Create a Plan/Profile sheet for an alignment and profile |
 | `civil3d_plan_profile_sheet_update_alignment` | Update alignment and/or profile on an existing sheet |
 
 </details>
@@ -715,7 +710,7 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 </details>
 
 <details>
-<summary><strong>Workflow Automation (14 tools)</strong></summary>
+<summary><strong>Workflow Automation (13 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -732,19 +727,16 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 | `civil3d_workflow_pipe_network_design` | Size a gravity pipe network and optionally run hydraulic analysis |
 | `civil3d_workflow_plan_production_publish` | Publish a sheet set or explicit layout list to PDF output |
 | `civil3d_workflow_qc_fix_and_verify` | Audit drawing standards, apply fixes, and verify the result |
-| `civil3d_workflow_survey_import_adjust_figures` | Import survey LandXML, optionally adjust a network, and review resulting figures |
 
 </details>
 
 <details>
-<summary><strong>Quantity Takeoff (10 tools)</strong></summary>
+<summary><strong>Quantity Takeoff (8 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `civil3d_qty_surface_volume` | Cut/fill volumes between surfaces (with corridor or region scope) |
 | `civil3d_qty_earthwork_summary` | Running earthwork cut/fill summary table |
-| `civil3d_qty_corridor_volumes` | Subassembly material volumes by region for a corridor |
-| `civil3d_qty_material_list_get` | Retrieve material list defined on a corridor |
 | `civil3d_qty_pipe_network_lengths` | Total pipe lengths for a gravity pipe network |
 | `civil3d_qty_pressure_network_lengths` | Total pipe lengths for a pressure network |
 | `civil3d_qty_alignment_lengths` | Total length for one or more alignments |
@@ -762,7 +754,7 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 | `civil3d_hydrology` | Canonical hydrology tool for surface drainage, catchments, Tc, SSA, and multi-step workflows |
 | `civil3d_catchment` | Manages catchments and catchment groups, including properties, flow paths, and boundaries |
 | `civil3d_time_of_concentration` | Calculates Tc using supported methods and generates hydrographs |
-| `civil3d_stm` | Exports/imports STM files and opens Storm and Sanitary Analysis |
+| `civil3d_stm` | Opens interactive STM import/export and Storm and Sanitary Analysis dialogs |
 | `civil3d_hydrology_watershed_runoff_workflow` | Runs low-point or outlet-based watershed delineation through runoff estimation |
 | `civil3d_hydrology_runoff_detention_workflow` | Runs runoff estimation through detention sizing and optional stage-storage output |
 | `civil3d_hydrology_runoff_pipe_workflow` | Runs runoff estimation through gravity pipe HGL and hydraulic analysis |
@@ -822,12 +814,11 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 </details>
 
 <details>
-<summary><strong>Slope Analysis (2 tools)</strong></summary>
+<summary><strong>Slope Analysis (1 tool)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `civil3d_slope_geometry_calculate` | Calculate daylight line coordinates and slope geometry for cut/fill sections |
-| `civil3d_slope_stability_check` | Evaluate cut and fill slope stability along an alignment |
 
 </details>
 
@@ -842,14 +833,11 @@ one or more operations; alias rows show an em dash in the **Operations** column.
 </details>
 
 <details>
-<summary><strong>Survey Processing (4 tools)</strong></summary>
+<summary><strong>Survey Processing (1 tool)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `civil3d_survey_observation_list` | List survey observations from a survey database |
-| `civil3d_survey_network_adjust` | Adjust survey networks (least squares, compass, transit, crandall) |
-| `civil3d_survey_figure_create` | Create survey figures from point numbers |
-| `civil3d_survey_landxml_import` | Import survey data from LandXML files |
 
 </details>
 

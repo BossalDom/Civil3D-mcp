@@ -281,6 +281,8 @@ public static class AssemblyCreationCommands
       ["name"] = CivilObjectUtils.GetName(subassembly) ?? subassembly.Handle.ToString(),
       ["handle"] = CivilObjectUtils.GetHandle(subassembly),
       ["type"] = subassembly.GetType().Name,
+      ["className"] = subassembly.GetType().Name,
+      ["side"] = Civil3DCompatibility.GetPropertyValue(subassembly, "Side")?.ToString()?.ToLowerInvariant() ?? "none",
       ["parameters"] = Civil3DCompatibility.GetReadableScalarProperties(subassembly),
     };
   }

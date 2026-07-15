@@ -25,4 +25,19 @@ describe("tool error contract", () => {
       message: "Surface was not found",
     });
   });
+
+  it("preserves untyped availability failures for HTTP classification", async () => {
+    const toolName = "test_untyped_unavailable_error";
+    captureToolHandler(toolName, async () => ({
+      content: [{ type: "text", text: "Plugin not running" }],
+      isError: true,
+    }));
+
+    const error = await executeRegisteredTool(toolName, {})
+      .then(() => undefined, (reason) => reason);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(Civil3DRpcError);
+    expect(error).toMatchObject({ message: "Plugin not running" });
+  });
 });

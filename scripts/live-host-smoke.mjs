@@ -4,7 +4,12 @@ if (process.env.CIVIL3D_LIVE_SMOKE_CONFIRM !== confirmation) {
 }
 
 const baseUrl = process.env.CIVIL3D_MCP_HTTP_URL ?? "http://127.0.0.1:3000";
-const headers = { "Content-Type": "application/json" };
+const headers = {
+  "Content-Type": "application/json",
+  ...(process.env.MCP_HTTP_TOKEN
+    ? { Authorization: `Bearer ${process.env.MCP_HTTP_TOKEN}` }
+    : {}),
+};
 
 async function request(path, init = {}) {
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { ...headers, ...init.headers } });
@@ -107,9 +112,16 @@ const uniqueOutputPath = outputPath.replace(/\.txt$/i, `-${Date.now()}.txt`);
 const job = await approved("civil3d_job", "start", {
   action: "start", operation: "bulk_qc_report", parameters: { outputPath: uniqueOutputPath },
 });
-const cancelled = await execute("civil3d_job", { action: "cancel", jobId: job.jobId });
-if (cancelled.state !== "cancelled") {
-  throw new Error(`Job cancellation did not win the race: ${JSON.stringify(cancelled)}`);
+let cancelled = await execute("civil3d_job", { action: "cancel", jobId: job.jobId });
+if (!cancelled.cancellationRequested) {
+  throw new Error(`Job cancellation was not recorded: ${JSON.stringify(cancelled)}`);
+}
+for (let attempt = 0; attempt < 100 && cancelled.state === "running"; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  cancelled = await execute("civil3d_job", { action: "status", jobId: job.jobId });
+}
+if (!new Set(["cancelled", "completed"]).has(cancelled.state)) {
+  throw new Error(`Job did not reach a terminal state after cancellation: ${JSON.stringify(cancelled)}`);
 }
 
 const completedOutputPath = uniqueOutputPath.replace(/\.txt$/i, "-completed.txt");

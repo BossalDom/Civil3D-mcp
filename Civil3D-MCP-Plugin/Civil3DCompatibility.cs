@@ -252,6 +252,11 @@ internal static class Civil3DCompatibility
       catch (TargetParameterCountException)
       {
       }
+      catch (TargetInvocationException)
+      {
+        // The runtime-selected overload rejected its synthesized defaults.
+        // Continue so another compatible Civil 3D overload can be attempted.
+      }
     }
 
     return false;

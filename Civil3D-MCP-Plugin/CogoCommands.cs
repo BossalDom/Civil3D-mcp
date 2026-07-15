@@ -422,7 +422,9 @@ public static class CogoCommands
             ?? CivilObjectUtils.GetStringProperty(obs, "Type")
             ?? string.Empty;
 
-          if (observationType != null && !string.Equals(typeValue, observationType, StringComparison.OrdinalIgnoreCase) &&
+          if (!string.IsNullOrWhiteSpace(observationType) &&
+              !string.Equals(observationType, "all", StringComparison.OrdinalIgnoreCase) &&
+              !string.Equals(typeValue, observationType, StringComparison.OrdinalIgnoreCase) &&
               !string.Equals(typeValue, observationType.Replace("_", ""), StringComparison.OrdinalIgnoreCase))
           {
             continue;

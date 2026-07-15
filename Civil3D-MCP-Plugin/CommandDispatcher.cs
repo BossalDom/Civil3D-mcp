@@ -73,6 +73,7 @@ public static class CommandDispatcher
       "extractSurfaceContours" => SurfaceCommands.ExtractSurfaceContoursAsync(parameters),
       "computeSurfaceVolume" => SurfaceCommands.ComputeSurfaceVolumeAsync(parameters),
       "addSurfaceWatershed" => SurfaceCommands.AddSurfaceWatershedsAsync(parameters),
+      "addSurfaceWatersheds" => SurfaceCommands.AddSurfaceWatershedsAsync(parameters),
       "calculateSurfaceVolume" => SurfaceCommands.CalculateSurfaceVolumeAsync(parameters),
       "getSurfaceVolumeReport" => SurfaceCommands.GetSurfaceVolumeReportAsync(parameters),
       "calculateSurfaceVolumeByRegion" => SurfaceCommands.CalculateSurfaceVolumeByRegionAsync(parameters),

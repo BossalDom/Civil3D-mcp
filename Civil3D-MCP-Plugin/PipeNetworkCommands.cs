@@ -149,8 +149,8 @@ public static class PipeNetworkCommands
     var x = PluginRuntime.GetRequiredDouble(parameters, "x");
     var y = PluginRuntime.GetRequiredDouble(parameters, "y");
     var partName = PluginRuntime.GetRequiredString(parameters, "partName");
-    var rimElevation = PluginRuntime.GetRequiredDouble(parameters, "rimElevation");
-    var sumpDepth = PluginRuntime.GetRequiredDouble(parameters, "sumpDepth");
+    var rimElevation = PluginRuntime.GetOptionalDouble(parameters, "rimElevation") ?? 0.0;
+    var sumpDepth = PluginRuntime.GetOptionalDouble(parameters, "sumpDepth") ?? 0.0;
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -471,6 +471,10 @@ public static class PipeNetworkCommands
     var createdId = ObjectId.Null;
     network.AddLinePipe(part.FamilyId, part.SizeId, new LineSegment3d(start, end), ref createdId, applyRules: false);
     var pipe = CivilObjectUtils.GetRequiredObject<Pipe>(transaction, createdId, OpenMode.ForWrite);
+    if (startStructureId != ObjectId.Null)
+      pipe.ConnectToStructure(ConnectorPositionType.Start, startStructureId, force: true);
+    if (endStructureId != ObjectId.Null)
+      pipe.ConnectToStructure(ConnectorPositionType.End, endStructureId, force: true);
     if (diameter.HasValue && Math.Abs(pipe.InnerDiameterOrWidth - diameter.Value) > 1.0e-6)
       throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Part size '{partName}' has inner diameter/width {pipe.InnerDiameterOrWidth}, not the requested {diameter.Value}. The pipe was not committed.");
     return createdId;

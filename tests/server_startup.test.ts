@@ -19,12 +19,14 @@ describe("MCP server startup", () => {
       const tools = await client.listTools();
       const health = tools.tools.find((tool) => tool.name === "civil3d_health");
       const drawing = tools.tools.find((tool) => tool.name === "civil3d_drawing");
-      expect(tools.tools).toHaveLength(MIGRATED_DOMAIN_DEFINITIONS.length + 3);
+      const help = tools.tools.find((tool) => tool.name === "civil3d_help");
+      expect(tools.tools).toHaveLength(MIGRATED_DOMAIN_DEFINITIONS.length + 4);
       expect(health?.outputSchema).toBeDefined();
       expect(health?.inputSchema.properties).toHaveProperty("idempotencyKey");
       expect(health?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
       expect(drawing?.outputSchema).toBeDefined();
       expect(drawing?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+      expect(help?.inputSchema.properties).toHaveProperty("action");
 
       const resources = await client.listResources();
       expect(resources.resources.map((resource) => resource.uri)).toEqual(expect.arrayContaining([
@@ -46,13 +48,14 @@ describe("MCP server startup", () => {
     await expect(registerTools(server)).resolves.toBeUndefined();
 
     const publiclyRegistered = Object.keys((server as any)._registeredTools ?? {});
-    expect(publiclyRegistered).toHaveLength(MIGRATED_DOMAIN_DEFINITIONS.length + 3);
+    expect(publiclyRegistered).toHaveLength(MIGRATED_DOMAIN_DEFINITIONS.length + 4);
 
     const names = listRegisteredToolNames();
     expect(names.length).toBeGreaterThan(200);
     expect(names.filter((name) => name === "civil3d_orchestrate")).toHaveLength(1);
     expect(names).toContain("civil3d_request_approval");
     expect(names).toContain("civil3d_preview_action");
+    expect(names).toContain("civil3d_help");
 
     const resources = Object.keys((server as any)._registeredResources ?? {});
     const resourceTemplates = Object.keys((server as any)._registeredResourceTemplates ?? {});
@@ -62,6 +65,9 @@ describe("MCP server startup", () => {
       "civil3d://standards/framework",
     ]));
     expect(resourceTemplates).toContain("civil3d-generated-report");
+    expect(resourceTemplates).toContain("civil3d-help-topic");
+    expect(resourceTemplates).toContain("civil3d-help-image");
+    expect(resourceTemplates).toContain("civil3d-help-video");
   });
 
   it("publishes output schemas and policy-derived MCP annotations", async () => {

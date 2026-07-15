@@ -16,7 +16,13 @@ import { Civil3DRpcError } from "../utils/SocketClient.js";
 
 /** MCP CallToolResult shape returned by every registerTool() handler */
 interface McpCallToolResult {
-  content: Array<{ type: string; text?: string }>;
+  content: Array<{
+    type: string;
+    text?: string;
+    data?: string;
+    mimeType?: string;
+    uri?: string;
+  }>;
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
   errorCode?: string;

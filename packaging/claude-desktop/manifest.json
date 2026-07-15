@@ -28,6 +28,9 @@
         "CIVIL3D_HOST": "${user_config.civil3d_host}",
         "CIVIL3D_PORT": "${user_config.civil3d_port}",
         "CIVIL3D_ENABLE_TOOL_ALIASES": "${user_config.enable_tool_aliases}",
+        "CIVIL3D_HELP_ROOT": "${user_config.help_root}",
+        "CIVIL3D_HELP_VERSION": "${user_config.help_version}",
+        "CIVIL3D_ENABLE_HELP_REINDEX": "${user_config.enable_help_reindex}",
         "CIVIL3D_LOG_LEVEL": "${user_config.log_level}",
         "MCP_HTTP_HOST": "127.0.0.1",
         "MCP_HTTP_PORT": "${user_config.http_port}"
@@ -46,6 +49,10 @@
     {
       "name": "civil3d_surface",
       "description": "Inspect, analyze, create, and modify Civil 3D surfaces."
+    },
+    {
+      "name": "civil3d_help",
+      "description": "Search Autodesk Civil 3D help and retrieve topics with screenshots, diagrams, and playable tutorial videos."
     }
   ],
   "tools_generated": true,
@@ -62,7 +69,7 @@
       "win32"
     ],
     "runtimes": {
-      "node": ">=18.0.0"
+      "node": ">=18.17.0"
     }
   },
   "user_config": {
@@ -85,7 +92,28 @@
     "enable_tool_aliases": {
       "type": "boolean",
       "title": "Expose all tool aliases",
-      "description": "Off exposes the recommended compact 33-tool surface; on exposes all 218 tools.",
+      "description": "Off exposes the recommended compact 34-tool surface; on exposes all specialized drawing tools plus local help.",
+      "default": false,
+      "required": false
+    },
+    "help_root": {
+      "type": "string",
+      "title": "Civil 3D offline help folder",
+      "description": "Optional Help folder override. Leave blank to auto-discover Autodesk Offline Help under Program Files.",
+      "default": "",
+      "required": false
+    },
+    "help_version": {
+      "type": "string",
+      "title": "Preferred offline help version",
+      "description": "Civil 3D help version to prefer when more than one is installed.",
+      "default": "2026",
+      "required": false
+    },
+    "enable_help_reindex": {
+      "type": "boolean",
+      "title": "Allow help reindex",
+      "description": "Allows agents to explicitly rebuild the local offline-help search cache.",
       "default": false,
       "required": false
     },

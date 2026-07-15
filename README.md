@@ -878,8 +878,39 @@ The Node MCP server reads the following variables at startup. All are optional; 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CIVIL3D_ENABLE_TOOL_ALIASES` | `false` | Set to `true` before the MCP server starts to expose all specialized aliases instead of the compact 33-tool surface. |
+| `CIVIL3D_ENABLE_TOOL_ALIASES` | `false` | Set to `true` before the MCP server starts to expose all specialized aliases instead of the compact 34-tool surface. |
 | `CIVIL3D_APPROVAL_MODE` | enforced | Set to `disabled` only in an isolated disposable test environment; production should retain parameter-bound approvals. |
+
+### Local Autodesk help search
+
+`civil3d_help` indexes the Autodesk Offline Help already installed with Civil 3D. It can search engineer phrasing such as “balance cut and fill” or “grading optimization,” return a cleaned Markdown topic, and attach the topic's useful screenshots and diagrams as MCP image content and `civil3d://help/images/...` resources. Matching Autodesk tutorial videos are returned as playable `civil3d://help/videos/...` player resources plus direct MP4 links. Decorative navigation icons are excluded. The drawing plugin does not need to be running for help searches.
+
+The first query builds a compressed local index under `%LOCALAPPDATA%\Civil3DMcp\help-index`; later starts reuse it until the Autodesk help files change. By default the server discovers folders named `Offline Help for Civil 3D <year> - <language>\Help` under Program Files and prefers 2026.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CIVIL3D_HELP_ROOT` | Auto-discovered | Optional absolute path to a Civil 3D Offline Help `Help` folder. |
+| `CIVIL3D_HELP_VERSION` | `2026` | Preferred installed documentation version. |
+| `CIVIL3D_HELP_CACHE_ROOT` | Local AppData | Override the generated search-index directory. |
+| `CIVIL3D_ENABLE_HELP_REINDEX` | `false` | Set to `true` to allow the tool's explicit `reindex` action. Automatic cache refresh remains enabled. |
+| `CIVIL3D_HELP_MAX_IMAGE_BYTES` | `6291456` | Maximum total bytes of inline image content returned by one topic request. |
+| `CIVIL3D_VIDEO_CATALOG` | Bundled 2026 catalog | Optional path to a refreshed JSON catalog produced by `scripts/scrape_autodesk_videos.py`. |
+
+The normal `search` and `get_topic` actions include the best matching video by default. Use `includeVideos: false` to suppress it, `maxVideos` to change the limit, or `search_videos` for a video-only lookup. Autodesk hosts these Civil 3D videos online, so playback requires internet access even though topic and image search remains local.
+
+Example calls:
+
+```json
+{ "action": "search", "query": "how do I use grading optimization?", "version": "2026" }
+```
+
+```json
+{ "action": "get_topic", "id": "<id from search>", "version": "2026", "includeImages": true }
+```
+
+```json
+{ "action": "search_videos", "query": "create grading criteria", "maxVideos": 2 }
+```
 
 ### HTTP bridge (Copilot / local HTTP clients → Node)
 

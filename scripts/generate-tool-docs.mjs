@@ -1,8 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { GENERATED_TOOL_CATALOG_ENTRIES } from "../build/tools/toolManifest.js";
+import { TOOL_CATALOG } from "../build/tools/tool_catalog.js";
 
 const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-const entries = [...GENERATED_TOOL_CATALOG_ENTRIES].sort((a, b) =>
+const entries = [...TOOL_CATALOG].sort((a, b) =>
   a.domain.localeCompare(b.domain) || a.toolName.localeCompare(b.toolName));
 const domains = new Set(entries.map((entry) => entry.domain));
 const rows = entries.map((entry) =>

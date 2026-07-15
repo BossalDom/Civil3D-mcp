@@ -19,6 +19,16 @@ The Node.js server also starts its loopback HTTP bridge on port `3000` by
 default. If another process already owns that port, choose a different HTTP
 bridge port in the extension settings.
 
+## Local Autodesk help
+
+The extension auto-discovers Autodesk Civil 3D Offline Help under Program Files.
+The `civil3d_help` tool searches those local files and can return the matching
+screenshots, diagrams, and Autodesk tutorial videos with each topic. Video-aware
+clients receive a player and all clients receive a direct MP4 fallback. Topic and
+image search works even when Civil 3D is not open or the machine is offline;
+video playback requires internet access. If help is stored elsewhere, set the
+optional **Civil 3D offline help folder** setting to its `Help` directory.
+
 ## Claude Desktop installation
 
 1. Open **Claude Desktop > Settings > Extensions**.

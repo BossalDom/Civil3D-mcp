@@ -1,10 +1,7 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { lookupFrameworkStandards } from "../standards/FrameworkStandardsService.js";
-import {
-  GENERATED_TOOL_CATALOG_ENTRIES,
-  MIGRATED_DOMAIN_DEFINITIONS,
-  selectManifestExposures,
-} from "./toolManifest.js";
+import { MIGRATED_DOMAIN_DEFINITIONS, selectManifestExposures } from "./toolManifest.js";
+import { TOOL_CATALOG } from "./tool_catalog.js";
 import { getReportResource, listReportResources } from "./reportResourceStore.js";
 
 const SAFETY_GUIDANCE = `# Civil 3D MCP safety and execution
@@ -39,8 +36,8 @@ export function registerMcpResources(server: McpServer): void {
           mimeType: "application/json",
           text: JSON.stringify({
             defaultTools,
-            totalCatalogEntries: GENERATED_TOOL_CATALOG_ENTRIES.length,
-            tools: GENERATED_TOOL_CATALOG_ENTRIES,
+            totalCatalogEntries: TOOL_CATALOG.length,
+            tools: TOOL_CATALOG,
           }, null, 2),
         }],
       };

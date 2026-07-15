@@ -249,8 +249,14 @@ All variables are optional; defaults work for a standard local setup.
 | `CIVIL3D_CONNECT_TIMEOUT` | `5000` | Connection timeout in milliseconds |
 | `CIVIL3D_COMMAND_TIMEOUT` | `120000` | Timeout for individual command execution (ms) |
 | `CIVIL3D_MAX_RESPONSE_BYTES` | `8388608` | Maximum plugin response buffered by Node.js |
-| `CIVIL3D_ENABLE_TOOL_ALIASES` | `false` | Expose all 218 MCP tools instead of the compact 33-tool surface |
+| `CIVIL3D_ENABLE_TOOL_ALIASES` | `false` | Expose specialized drawing aliases instead of the compact 34-tool surface |
 | `CIVIL3D_APPROVAL_MODE` | enforced | Set to `disabled` only for isolated disposable testing |
+| `CIVIL3D_HELP_ROOT` | Auto-discovered | Optional path to an Autodesk Civil 3D Offline Help `Help` folder |
+| `CIVIL3D_HELP_VERSION` | `2026` | Preferred installed offline-help version |
+| `CIVIL3D_HELP_CACHE_ROOT` | Local AppData | Generated offline-help index directory |
+| `CIVIL3D_ENABLE_HELP_REINDEX` | `false` | Allow the `civil3d_help` explicit `reindex` action |
+| `CIVIL3D_HELP_MAX_IMAGE_BYTES` | `6291456` | Maximum inline help-image bytes per topic response |
+| `CIVIL3D_VIDEO_CATALOG` | Bundled 2026 catalog | Optional refreshed Autodesk video-catalog JSON path |
 | `MCP_HTTP_PORT` | `3000` | HTTP bridge port for local HTTP clients |
 | `MCP_HTTP_HOST` | `127.0.0.1` | HTTP bridge bind address |
 | `MCP_HTTP_TOKEN` | *(unset)* | Shared secret required for non-loopback binds |

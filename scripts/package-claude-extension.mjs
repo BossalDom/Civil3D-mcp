@@ -128,7 +128,7 @@ const runtimePackageJson = {
   type: packageJson.type,
   private: true,
   engines: {
-    node: ">=18.0.0",
+    node: ">=18.17.0",
   },
   dependencies: packageJson.dependencies,
 };

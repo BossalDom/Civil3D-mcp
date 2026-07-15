@@ -4,6 +4,9 @@
   "description": "MCP server for interacting with Autodesk Civil 3D.",
   "main": "build/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=18.17.0"
+  },
   "bin": {
     "civil3d-mcp": "./build/index.js"
   },
@@ -47,6 +50,8 @@
   "homepage": "https://github.com/Sacred-G/Civil3D-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "cheerio": "^1.0.0",
+    "minisearch": "^7.2.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

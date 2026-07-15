@@ -13,15 +13,20 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npm run version:check
       - run: npm run build
       - run: npm test
-      - run: npm run test:p2-boundaries
       - run: node ./scripts/generate-tool-docs.mjs --check
       - run: node ./scripts/startup-smoke.mjs
       - run: node ./scripts/inspect-package.mjs
+
+  file-boundary:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet run --project ./tests/FileBoundaryHarness/FileBoundaryHarness.csproj

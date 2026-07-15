@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.Geometry;
 using Autodesk.Civil.DatabaseServices;
@@ -99,6 +98,12 @@ public static class PointCommands
     var format = PluginRuntime.GetRequiredString(parameters, "format");
     var data = PluginRuntime.GetRequiredString(parameters, "data");
     var targetSurface = PluginRuntime.GetOptionalString(parameters, "targetSurface");
+    if (!string.IsNullOrWhiteSpace(targetSurface))
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.API_ERROR",
+        "Importing COGO points directly into a target surface is not implemented. No points were imported.");
+    }
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
@@ -114,8 +119,7 @@ public static class PointCommands
       {
         ["imported"] = createdNumbers.Count,
         ["pointNumbers"] = createdNumbers,
-        ["targetSurface"] = targetSurface,
-        ["warning"] = string.IsNullOrWhiteSpace(targetSurface) ? null : "targetSurface was accepted but surface population is not yet implemented in this plugin.",
+        ["targetSurface"] = null,
       };
     });
   }
@@ -153,25 +157,17 @@ public static class PointCommands
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var groups = new List<Dictionary<string, object?>>();
-      var pointGroupsProperty = civilDoc.GetType().GetProperty("PointGroups", BindingFlags.Public | BindingFlags.Instance);
-      var pointGroups = pointGroupsProperty?.GetValue(civilDoc);
-
-      foreach (var objectId in CivilObjectUtils.ToObjectIds(pointGroups))
+      foreach (Autodesk.AutoCAD.DatabaseServices.ObjectId objectId in civilDoc.PointGroups)
       {
-        var groupObject = transaction.GetObject(objectId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
-        if (groupObject == null)
-        {
-          continue;
-        }
-
-        var numbers = CivilObjectUtils.InvokeMethod(groupObject, "GetPointNumbers") as IEnumerable<uint>;
+        var group = CivilObjectUtils.GetRequiredObject<PointGroup>(transaction, objectId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+        var query = group.GetQuery() as StandardPointGroupQuery;
         groups.Add(new Dictionary<string, object?>
         {
-          ["name"] = CivilObjectUtils.GetName(groupObject),
-          ["description"] = CivilObjectUtils.GetStringProperty(groupObject, "Description"),
-          ["pointCount"] = numbers?.Count() ?? 0,
-          ["includePattern"] = CivilObjectUtils.GetStringProperty(groupObject, "IncludeNumbers"),
-          ["excludePattern"] = CivilObjectUtils.GetStringProperty(groupObject, "ExcludeNumbers"),
+          ["name"] = group.Name,
+          ["description"] = group.Description,
+          ["pointCount"] = group.PointsCount,
+          ["includePattern"] = query?.IncludeNumbers,
+          ["excludePattern"] = query?.ExcludeNumbers,
         });
       }
 
@@ -206,19 +202,15 @@ public static class PointCommands
 
   private static HashSet<uint>? TryGetPointNumbersForGroup(Autodesk.Civil.ApplicationServices.CivilDocument civilDoc, Autodesk.AutoCAD.DatabaseServices.Transaction transaction, string groupName)
   {
-    var pointGroupsProperty = civilDoc.GetType().GetProperty("PointGroups", BindingFlags.Public | BindingFlags.Instance);
-    var pointGroups = pointGroupsProperty?.GetValue(civilDoc);
-
-    foreach (var objectId in CivilObjectUtils.ToObjectIds(pointGroups))
+    foreach (Autodesk.AutoCAD.DatabaseServices.ObjectId objectId in civilDoc.PointGroups)
     {
-      var groupObject = transaction.GetObject(objectId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
-      if (!string.Equals(CivilObjectUtils.GetName(groupObject), groupName, StringComparison.OrdinalIgnoreCase))
+      var group = CivilObjectUtils.GetRequiredObject<PointGroup>(transaction, objectId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+      if (!string.Equals(group.Name, groupName, StringComparison.OrdinalIgnoreCase))
       {
         continue;
       }
 
-      var numbers = CivilObjectUtils.InvokeMethod(groupObject, "GetPointNumbers") as IEnumerable<uint>;
-      return numbers == null ? null : new HashSet<uint>(numbers);
+      return new HashSet<uint>(group.GetPointNumbers());
     }
 
     throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Point group '{groupName}' was not found.");

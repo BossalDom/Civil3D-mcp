@@ -72,6 +72,10 @@ const AlignmentReportStationSampleSchema = z.object({
   units: z.string(),
 });
 
+const AlignmentStationSamplesResponseSchema = z.object({
+  samples: z.array(AlignmentReportStationSampleSchema),
+});
+
 const AlignmentReportResponseSchema = z.object({
   alignment: AlignmentDetailResponseSchema,
   summary: z.object({
@@ -102,7 +106,6 @@ const canonicalAlignmentInputShape = {
     "delete",
     "report",
     "add_tangent",
-    "add_curve",
     "add_spiral",
     "delete_entity",
     "set_station_equation",
@@ -388,7 +391,7 @@ export const ALIGNMENT_DOMAIN_DEFINITION: DomainToolDefinition = {
       capabilities: ["query", "analyze", "generate"],
       requiresActiveDrawing: true,
       safeForRetry: true,
-      pluginMethods: ["getAlignment", "alignmentStationToPoint"],
+      pluginMethods: ["getAlignment", "alignmentSampleStations"],
       execute: async (args) => await withApplicationConnection(async (appClient) => {
         const alignment = AlignmentDetailResponseSchema.parse(
           await appClient.sendCommand("getAlignment", {
@@ -407,18 +410,13 @@ export const ALIGNMENT_DOMAIN_DEFINITION: DomainToolDefinition = {
           maximumSamples,
         );
 
-        const stationSamples = [];
-        for (const station of stations) {
-          stationSamples.push(
-            AlignmentStationToPointResponseSchema.parse(
-              await appClient.sendCommand("alignmentStationToPoint", {
-                name: args.name,
-                station,
-                offset: args.offset ?? 0,
-              }),
-            ),
-          );
-        }
+        const stationSamples = AlignmentStationSamplesResponseSchema.parse(
+          await appClient.sendCommand("alignmentSampleStations", {
+            name: args.name,
+            stations,
+            offset: args.offset ?? 0,
+          }),
+        ).samples;
 
         const entityTypeBreakdown = alignment.entities.reduce(
           (accumulator, entity) => {
@@ -602,7 +600,6 @@ export const ALIGNMENT_DOMAIN_DEFINITION: DomainToolDefinition = {
         "delete",
         "report",
         "add_tangent",
-        "add_curve",
         "add_spiral",
         "delete_entity",
         "set_station_equation",
@@ -658,28 +655,6 @@ export const ALIGNMENT_DOMAIN_DEFINITION: DomainToolDefinition = {
           startY: rawArgs.startY,
           endX: rawArgs.endX,
           endY: rawArgs.endY,
-        },
-      }),
-    },
-    {
-      toolName: "civil3d_alignment_add_curve",
-      displayName: "Civil 3D Alignment Add Curve",
-      description: "Appends a fixed horizontal curve entity to a Civil 3D alignment using a pass-through point and radius.",
-      inputShape: {
-        alignmentName: z.string(),
-        passThroughX: z.number(),
-        passThroughY: z.number(),
-        radius: z.number().positive(),
-      },
-      supportedActions: ["add_curve"],
-      resolveAction: (rawArgs) => ({
-        action: "add_curve",
-        args: {
-          action: "add_curve",
-          name: rawArgs.alignmentName,
-          passThroughX: rawArgs.passThroughX,
-          passThroughY: rawArgs.passThroughY,
-          radius: rawArgs.radius,
         },
       }),
     },

@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
@@ -445,40 +444,30 @@ public static class LabelCommands
     );
   }
 
-  private static ObjectId TryCreateLabel(IEnumerable<string> candidateTypeNames, string labelDescription, Func<ParameterInfo[], object?[]?> argumentBuilder)
+  private static ObjectId TryCreateLabel(
+    IEnumerable<string> candidateTypeNames,
+    string labelDescription,
+    Func<Civil3DCompatibility.ParameterShape[], object?[]?> argumentBuilder)
   {
     foreach (var typeName in candidateTypeNames)
     {
-      var type = Type.GetType(typeName, false);
+      var type = Civil3DCompatibility.FindLoadedType(typeName);
       if (type == null)
       {
         continue;
       }
 
-      var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Static)
-        .Where(method => method.Name == "Create")
-        .OrderBy(method => method.GetParameters().Length)
-        .ToList();
-
-      foreach (var method in methods)
+      if (Civil3DCompatibility.TryInvokeStaticOverloads(
+        type,
+        "Create",
+        argumentBuilder,
+        out var result,
+        out var args))
       {
-        var args = argumentBuilder(method.GetParameters());
-        if (args == null)
+        var objectId = ExtractCreatedObjectId(result, args ?? Array.Empty<object?>());
+        if (objectId != ObjectId.Null)
         {
-          continue;
-        }
-
-        try
-        {
-          var result = method.Invoke(null, args);
-          var objectId = ExtractCreatedObjectId(result, args);
-          if (objectId != ObjectId.Null)
-          {
-            return objectId;
-          }
-        }
-        catch
-        {
+          return objectId;
         }
       }
     }
@@ -486,7 +475,7 @@ public static class LabelCommands
     throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"Unable to create a {labelDescription} label with the available Civil 3D API overloads.");
   }
 
-  private static object?[]? BuildSurfaceSpotLabelArguments(ParameterInfo[] parameters, ObjectId surfaceId, ObjectId styleId, Point2d point)
+  private static object?[]? BuildSurfaceSpotLabelArguments(Civil3DCompatibility.ParameterShape[] parameters, ObjectId surfaceId, ObjectId styleId, Point2d point)
   {
     var args = new object?[parameters.Length];
     var objectIds = new Queue<ObjectId>(new[] { surfaceId, styleId });
@@ -495,7 +484,7 @@ public static class LabelCommands
 
     for (var i = 0; i < parameters.Length; i++)
     {
-      var parameterType = parameters[i].ParameterType.IsByRef ? parameters[i].ParameterType.GetElementType()! : parameters[i].ParameterType;
+      var parameterType = parameters[i].Type;
 
       if (parameterType == typeof(ObjectId))
       {
@@ -545,7 +534,7 @@ public static class LabelCommands
     return args;
   }
 
-  private static object?[]? BuildProfileStationLabelArguments(ParameterInfo[] parameters, ObjectId profileId, ObjectId styleId, double station)
+  private static object?[]? BuildProfileStationLabelArguments(Civil3DCompatibility.ParameterShape[] parameters, ObjectId profileId, ObjectId styleId, double station)
   {
     var args = new object?[parameters.Length];
     var objectIds = new Queue<ObjectId>(new[] { profileId, styleId });
@@ -553,7 +542,7 @@ public static class LabelCommands
 
     for (var i = 0; i < parameters.Length; i++)
     {
-      var parameterType = parameters[i].ParameterType.IsByRef ? parameters[i].ParameterType.GetElementType()! : parameters[i].ParameterType;
+      var parameterType = parameters[i].Type;
 
       if (parameterType == typeof(ObjectId))
       {
@@ -603,14 +592,14 @@ public static class LabelCommands
     return args;
   }
 
-  private static object?[]? BuildSingleObjectLabelArguments(ParameterInfo[] parameters, ObjectId objectId, ObjectId styleId)
+  private static object?[]? BuildSingleObjectLabelArguments(Civil3DCompatibility.ParameterShape[] parameters, ObjectId objectId, ObjectId styleId)
   {
     var args = new object?[parameters.Length];
     var objectIds = new Queue<ObjectId>(new[] { objectId, styleId });
 
     for (var i = 0; i < parameters.Length; i++)
     {
-      var parameterType = parameters[i].ParameterType.IsByRef ? parameters[i].ParameterType.GetElementType()! : parameters[i].ParameterType;
+      var parameterType = parameters[i].Type;
 
       if (parameterType == typeof(ObjectId))
       {
@@ -660,7 +649,7 @@ public static class LabelCommands
     return args;
   }
 
-  private static object?[]? BuildAlignmentStationLabelArguments(ParameterInfo[] parameters, ObjectId alignmentId, ObjectId styleId, double station)
+  private static object?[]? BuildAlignmentStationLabelArguments(Civil3DCompatibility.ParameterShape[] parameters, ObjectId alignmentId, ObjectId styleId, double station)
   {
     var args = new object?[parameters.Length];
     var objectIds = new Queue<ObjectId>(new[] { alignmentId, styleId });
@@ -668,7 +657,7 @@ public static class LabelCommands
 
     for (var i = 0; i < parameters.Length; i++)
     {
-      var parameterType = parameters[i].ParameterType.IsByRef ? parameters[i].ParameterType.GetElementType()! : parameters[i].ParameterType;
+      var parameterType = parameters[i].Type;
 
       if (parameterType == typeof(ObjectId))
       {
@@ -802,14 +791,8 @@ public static class LabelCommands
       return null;
     }
 
-    var property = value.GetType().GetProperty(memberName, BindingFlags.Public | BindingFlags.Instance);
-    if (property != null)
-    {
-      return property.GetValue(value);
-    }
-
-    var field = value.GetType().GetField(memberName, BindingFlags.Public | BindingFlags.Instance);
-    return field?.GetValue(value);
+    return Civil3DCompatibility.GetPropertyValue(value, memberName)
+      ?? Civil3DCompatibility.GetFieldValue(value, memberName);
   }
 
   private static ObjectId GetObjectId(object? value, string propertyName)
@@ -843,14 +826,7 @@ public static class LabelCommands
 
     foreach (var propertyName in propertyNames)
     {
-      var property = target.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-      if (property == null || !property.CanWrite || property.PropertyType != typeof(ObjectId))
-      {
-        continue;
-      }
-
-      property.SetValue(target, objectId);
-      return;
+      if (Civil3DCompatibility.TrySetProperty(target, propertyName, objectId)) return;
     }
 
     throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"Object '{CivilObjectUtils.GetName(target)}' does not expose a writable label set property.");

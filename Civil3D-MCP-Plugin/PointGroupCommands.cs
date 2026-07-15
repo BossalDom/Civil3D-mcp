@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -11,10 +10,7 @@ namespace Civil3DMcpPlugin;
 /// <summary>
 /// Handlers for Civil 3D Point Group management and point export/transform.
 ///
-/// Civil 3D API notes (reflection-based late binding):
-///   AeccPointGroup  -- manages a filtered/ordered set of COGO points
-///
-/// Accessed via reflection to avoid a hard dependency on the exact AeccDbMgd version.
+/// Uses the documented PointGroup and StandardPointGroupQuery managed APIs.
 /// </summary>
 public static class PointGroupCommands
 {
@@ -32,28 +28,10 @@ public static class PointGroupCommands
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      var pointGroupsProperty = civilDoc.GetType().GetProperty("PointGroups", BindingFlags.Public | BindingFlags.Instance);
-      var pointGroups = pointGroupsProperty?.GetValue(civilDoc);
-
-      var addMethod = pointGroups?.GetType().GetMethod("Add", new[] { typeof(string) });
-      if (addMethod == null)
-      {
-        throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "PointGroups.Add(name) method not found.");
-      }
-
-      var newGroupId = (ObjectId)(addMethod.Invoke(pointGroups, new object[] { name })
-        ?? throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "Failed to create point group."));
-
-      var newGroup = transaction.GetObject(newGroupId, OpenMode.ForWrite);
-
-      // Set optional properties
-      TrySetProperty(newGroup, "Description", description);
-      if (includeNumbers != null) TrySetProperty(newGroup, "IncludeNumbers", includeNumbers);
-      if (excludeNumbers != null) TrySetProperty(newGroup, "ExcludeNumbers", excludeNumbers);
-      if (includeDescriptions != null) TrySetProperty(newGroup, "IncludeDescriptions", includeDescriptions);
-
-      // Force update
-      CivilObjectUtils.InvokeMethod(newGroup, "Update");
+      var newGroupId = civilDoc.PointGroups.Add(name);
+      var newGroup = CivilObjectUtils.GetRequiredObject<PointGroup>(transaction, newGroupId, OpenMode.ForWrite);
+      newGroup.Description = description;
+      ApplyStandardQuery(newGroup, includeNumbers, excludeNumbers, includeDescriptions);
 
       return new Dictionary<string, object?>
       {
@@ -80,12 +58,8 @@ public static class PointGroupCommands
     {
       var group = FindPointGroupByName(civilDoc, transaction, name, OpenMode.ForWrite);
 
-      if (description != null) TrySetProperty(group, "Description", description);
-      if (includeNumbers != null) TrySetProperty(group, "IncludeNumbers", includeNumbers);
-      if (excludeNumbers != null) TrySetProperty(group, "ExcludeNumbers", excludeNumbers);
-      if (includeDescriptions != null) TrySetProperty(group, "IncludeDescriptions", includeDescriptions);
-
-      CivilObjectUtils.InvokeMethod(group, "Update");
+      if (description != null) group.Description = description;
+      ApplyStandardQuery(group, includeNumbers, excludeNumbers, includeDescriptions);
 
       return new Dictionary<string, object?>
       {
@@ -134,8 +108,7 @@ public static class PointGroupCommands
       if (!string.IsNullOrWhiteSpace(groupName))
       {
         var group = FindPointGroupByName(civilDoc, transaction, groupName!, OpenMode.ForRead);
-        var numbers = CivilObjectUtils.InvokeMethod(group, "GetPointNumbers") as IEnumerable<uint>;
-        allowedNumbers = numbers == null ? new HashSet<uint>() : new HashSet<uint>(numbers);
+        allowedNumbers = new HashSet<uint>(group.GetPointNumbers());
       }
 
       if (numbersNode != null && numbersNode.Count > 0)
@@ -201,8 +174,7 @@ public static class PointGroupCommands
       else if (!string.IsNullOrWhiteSpace(groupName))
       {
         var group = FindPointGroupByName(civilDoc, transaction, groupName!, OpenMode.ForRead);
-        var numbers = CivilObjectUtils.InvokeMethod(group, "GetPointNumbers") as IEnumerable<uint>;
-        targetNumbers = numbers == null ? new HashSet<uint>() : new HashSet<uint>(numbers);
+        targetNumbers = new HashSet<uint>(group.GetPointNumbers());
       }
 
       var transformedCount = 0;
@@ -239,10 +211,8 @@ public static class PointGroupCommands
         y += translateY;
         z += translateZ;
 
-        if (TrySetPointCoordinate(writablePoint, x, y, z))
-        {
-          transformedCount++;
-        }
+        SetPointCoordinate(writablePoint, x, y, z);
+        transformedCount++;
       }
 
       return new Dictionary<string, object?>
@@ -261,65 +231,64 @@ public static class PointGroupCommands
   // Private helpers
   // -------------------------------------------------------------------------
 
-  private static AcDbObject FindPointGroupByName(
+  private static PointGroup FindPointGroupByName(
     Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
     Transaction transaction,
     string name,
     OpenMode mode)
   {
-    var pointGroupsProperty = civilDoc.GetType().GetProperty("PointGroups", BindingFlags.Public | BindingFlags.Instance);
-    var pointGroups = pointGroupsProperty?.GetValue(civilDoc);
-
-    foreach (var objectId in CivilObjectUtils.ToObjectIds(pointGroups))
+    foreach (ObjectId objectId in civilDoc.PointGroups)
     {
-      var groupObject = transaction.GetObject(objectId, OpenMode.ForRead);
-      if (string.Equals(CivilObjectUtils.GetName(groupObject), name, StringComparison.OrdinalIgnoreCase))
+      var group = CivilObjectUtils.GetRequiredObject<PointGroup>(transaction, objectId, mode);
+      if (string.Equals(group.Name, name, StringComparison.OrdinalIgnoreCase))
       {
-        return mode == OpenMode.ForWrite
-          ? transaction.GetObject(objectId, OpenMode.ForWrite)
-          : groupObject;
+        return group;
       }
     }
 
     throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Point group '{name}' was not found.");
   }
 
-  private static void TrySetProperty(AcDbObject obj, string propertyName, object value)
+  private static void ApplyStandardQuery(
+    PointGroup group,
+    string? includeNumbers,
+    string? excludeNumbers,
+    string? includeDescriptions)
   {
-    var prop = obj.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-    try { prop?.SetValue(obj, value); } catch { /* ignore */ }
-  }
-
-  private static bool TrySetPointCoordinate(CogoPoint point, double x, double y, double z)
-  {
-    if (TrySetCoordinateProperty(point, x, "Easting", "X")
-      & TrySetCoordinateProperty(point, y, "Northing", "Y")
-      & TrySetCoordinateProperty(point, z, "Elevation", "Z"))
+    if (includeNumbers == null && excludeNumbers == null && includeDescriptions == null)
     {
-      return true;
+      return;
     }
 
-    return CivilObjectUtils.InvokeMethod(point, "MoveTo", new Point3d(x, y, z)) != null
-      || CivilObjectUtils.InvokeMethod(point, "SetLocation", new Point3d(x, y, z)) != null;
-  }
-
-  private static bool TrySetCoordinateProperty(CogoPoint point, double value, params string[] propertyNames)
-  {
-    foreach (var propertyName in propertyNames)
+    var existingQuery = group.GetQuery();
+    if (existingQuery is not null && existingQuery is not StandardPointGroupQuery)
     {
-      var prop = point.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-      if (prop == null || !prop.CanWrite) continue;
-
-      try
-      {
-        prop.SetValue(point, value);
-        return true;
-      }
-      catch
-      {
-      }
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.CONFLICT",
+        $"Point group '{group.Name}' uses a custom query. Standard filters were not applied because doing so would discard its existing QueryString criteria.");
     }
 
-    return false;
+    var query = existingQuery as StandardPointGroupQuery ?? new StandardPointGroupQuery();
+    if (includeNumbers != null) query.IncludeNumbers = includeNumbers;
+    if (excludeNumbers != null) query.ExcludeNumbers = excludeNumbers;
+    if (includeDescriptions != null) query.IncludeRawDescriptions = includeDescriptions;
+    group.SetQuery(query);
+    group.Update();
+  }
+
+  private static void SetPointCoordinate(CogoPoint point, double x, double y, double z)
+  {
+    try
+    {
+      point.Easting = x;
+      point.Northing = y;
+      point.Elevation = z;
+    }
+    catch (Exception exception)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.API_ERROR",
+        $"COGO point {point.PointNumber} could not be moved: {exception.Message}");
+    }
   }
 }

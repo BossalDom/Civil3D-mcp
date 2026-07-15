@@ -1,21 +1,32 @@
+import { Civil3DRpcError } from "../utils/SocketClient.js";
+
 /**
- * Global registry that captures MCP tool handlers during server.tool() registration.
+ * Global registry that captures MCP tool handlers during registerTool() registration.
  * The HTTP bridge uses this registry to invoke any registered tool without going
  * through the MCP stdio protocol, enabling the AI Copilot (which connects via HTTP)
  * to call all 180+ tools.
  *
  * How it works:
- *   1. registerTools() in register.ts intercepts server.tool() calls
+ *   1. Domain and approval registration capture the same handlers passed to registerTool()
  *   2. Each handler is stored here by tool name
  *   3. httpBridge.ts looks up handlers from this registry
  *   4. The handler is called with the same params the MCP protocol would provide
  *   5. The MCP CallToolResult is unwrapped to extract the JSON payload
  */
 
-/** MCP CallToolResult shape returned by every server.tool() handler */
+/** MCP CallToolResult shape returned by every registerTool() handler */
 interface McpCallToolResult {
-  content: Array<{ type: string; text?: string }>;
+  content: Array<{
+    type: string;
+    text?: string;
+    data?: string;
+    mimeType?: string;
+    uri?: string;
+  }>;
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
+  errorCode?: string;
+  rpcCode?: number;
 }
 
 type ToolHandler = (
@@ -27,7 +38,7 @@ const _handlers = new Map<string, ToolHandler>();
 
 /**
  * Store a tool handler during registration.
- * Called by the server.tool() interceptor in register.ts.
+ * Called while domain and approval tools are registered.
  */
 export function captureToolHandler(name: string, handler: ToolHandler): void {
   _handlers.set(name, handler);
@@ -77,10 +88,30 @@ export async function executeRegisteredTool(
   if (mcpResult?.isError) {
     const errorText =
       mcpResult.content?.[0]?.text ?? `Tool '${toolName}' returned an error`;
-    throw new Error(errorText);
+    if (!mcpResult.errorCode) {
+      // Preserve connection/unavailability errors for the HTTP bridge's
+      // message-based classifier instead of relabeling them as internal 500s.
+      throw new Error(errorText);
+    }
+    throw new Civil3DRpcError(
+      errorText,
+      mcpResult.errorCode,
+      mcpResult.rpcCode ?? -32000,
+    );
   }
 
-  // Unwrap the MCP content envelope → raw JSON payload
+  // Prefer the typed MCP result while preserving the plain HTTP payload shape.
+  if (mcpResult?.structuredContent) {
+    if (
+      "result" in mcpResult.structuredContent &&
+      "action" in mcpResult.structuredContent
+    ) {
+      return mcpResult.structuredContent.result;
+    }
+    return mcpResult.structuredContent;
+  }
+
+  // Backwards-compatible text envelope fallback.
   const text = mcpResult?.content?.[0]?.text;
   if (text) {
     try {

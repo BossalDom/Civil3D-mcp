@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withApplicationConnection } from "../../utils/ConnectionManager.js";
 import type { DomainToolDefinition } from "../domainRuntime.js";
+import { JobLaunchResponseSchema } from "./sharedSchemas.js";
 
 // ─── Shared schemas ───────────────────────────────────────────────────────────
 
@@ -65,19 +66,20 @@ const CorridorFeatureLinesResponseSchema = z.object({
   featureLines: z.array(CorridorFeatureLineSchema),
 });
 
-const CorridorRebuildResponseSchema = z.object({
-  jobId: z.string(),
-}).passthrough();
+// The plugin now returns {jobId, state:"running", message} and completes the
+// rebuild on a background task. Use the shared job-launch envelope so the
+// contract is explicit.
+const CorridorRebuildResponseSchema = JobLaunchResponseSchema;
 
 const CorridorVolumesResponseSchema = z.object({
   cutVolume: z.number(),
   fillVolume: z.number(),
   netVolume: z.number(),
-  cutArea: z.number(),
-  fillArea: z.number(),
+  cutArea: z.number().nullable().optional(),
+  fillArea: z.number().nullable().optional(),
   units: z.object({
     volume: z.string(),
-    area: z.string(),
+    area: z.string().optional(),
   }),
 });
 

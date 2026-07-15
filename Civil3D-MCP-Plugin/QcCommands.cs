@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.Colors;
@@ -748,6 +747,7 @@ public static class QcCommands
   public static Task<object?> QcReportGenerateAsync(JsonObject? parameters)
   {
     var outputPath = PluginRuntime.GetRequiredString(parameters, "outputPath");
+    var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
     var includeAlignments = PluginRuntime.GetOptionalBool(parameters, "includeAlignments") ?? true;
     var includeProfiles = PluginRuntime.GetOptionalBool(parameters, "includeProfiles") ?? false;
     var includeCorridors = PluginRuntime.GetOptionalBool(parameters, "includeCorridors") ?? true;
@@ -917,11 +917,12 @@ public static class QcCommands
         sb.AppendLine($"  SUMMARY: {totalViolations} violation(s) across {checksRun} check(s)");
         sb.AppendLine("=======================================================");
 
-        System.IO.File.WriteAllText(outputPath, sb.ToString());
+        var canonicalOutputPath = FileBoundary.WriteAllTextAtomic(
+          outputPath, sb.ToString(), Encoding.UTF8, overwrite, ".txt");
 
         return new Dictionary<string, object?>
         {
-          ["outputPath"] = outputPath,
+          ["outputPath"] = canonicalOutputPath,
           ["checksRun"] = checksRun,
           ["totalViolations"] = totalViolations,
           ["sectionsIncluded"] = sectionsIncluded,
@@ -1208,22 +1209,7 @@ public static class QcCommands
     Transaction transaction,
     string name)
   {
-    foreach (var candidateProp in new[] { "PipeNetworkCollection", "NetworkCollection", "PipeNetworks", "Networks" })
-    {
-      var prop = civilDoc.GetType().GetProperty(candidateProp, BindingFlags.Public | BindingFlags.Instance);
-      var collection = prop?.GetValue(civilDoc);
-      foreach (var objectId in CivilObjectUtils.ToObjectIds(collection))
-      {
-        if (objectId == ObjectId.Null) continue;
-        var obj = transaction.GetObject(objectId, OpenMode.ForRead);
-        if (string.Equals(CivilObjectUtils.GetName(obj), name, StringComparison.OrdinalIgnoreCase))
-          return obj;
-      }
-    }
-
-    // Try GetPipeNetworkIds method
-    var methodResult = CivilObjectUtils.InvokeMethod(civilDoc, "GetPipeNetworkIds");
-    foreach (var objectId in CivilObjectUtils.ToObjectIds(methodResult))
+    foreach (ObjectId objectId in civilDoc.GetPipeNetworkIds())
     {
       if (objectId == ObjectId.Null) continue;
       var obj = transaction.GetObject(objectId, OpenMode.ForRead);
@@ -1238,15 +1224,10 @@ public static class QcCommands
     Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
     Transaction transaction)
   {
-    foreach (var candidateProp in new[] { "PipeNetworkCollection", "NetworkCollection", "PipeNetworks", "Networks" })
+    foreach (ObjectId objectId in civilDoc.GetPipeNetworkIds())
     {
-      var prop = civilDoc.GetType().GetProperty(candidateProp, BindingFlags.Public | BindingFlags.Instance);
-      var collection = prop?.GetValue(civilDoc);
-      foreach (var objectId in CivilObjectUtils.ToObjectIds(collection))
-      {
-        if (objectId == ObjectId.Null) continue;
-        yield return transaction.GetObject(objectId, OpenMode.ForRead);
-      }
+      if (objectId == ObjectId.Null) continue;
+      yield return transaction.GetObject(objectId, OpenMode.ForRead);
     }
   }
 

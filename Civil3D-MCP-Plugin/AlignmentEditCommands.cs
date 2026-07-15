@@ -29,25 +29,14 @@ public static class AlignmentEditCommands
       var writeAlignment = CivilObjectUtils.GetRequiredObject<Alignment>(
         transaction, alignment.ObjectId, OpenMode.ForWrite);
 
-      var pt1 = new Point2d(startX, startY);
-      var pt2 = new Point2d(endX, endY);
-
-      var entities = CivilObjectUtils.GetPropertyValue<object>(writeAlignment, "Entities");
-      if (entities == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Could not access Entities collection for alignment '{alignmentName}'.");
-      }
-
-      // AlignmentEntityCollection.AddFixedLine(pt1, pt2)
-      var addedEntity = CivilObjectUtils.InvokeMethod(entities, "AddFixedLine", pt1, pt2);
+      var entities = writeAlignment.Entities;
+      entities.AddFixedLine(new Point3d(startX, startY, 0), new Point3d(endX, endY, 0));
 
       return new Dictionary<string, object?>
       {
         ["alignmentName"] = alignment.Name,
         ["operation"] = "add_tangent",
-        ["entityIndex"] = GetEntityIndex(addedEntity),
+        ["entityIndex"] = entities.Count - 1,
         ["startX"] = startX,
         ["startY"] = startY,
         ["endX"] = endX,
@@ -66,34 +55,10 @@ public static class AlignmentEditCommands
     var passThroughY = PluginRuntime.GetRequiredDouble(parameters, "passThroughY");
     var radius = PluginRuntime.GetRequiredDouble(parameters, "radius");
 
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
-      var writeAlignment = CivilObjectUtils.GetRequiredObject<Alignment>(
-        transaction, alignment.ObjectId, OpenMode.ForWrite);
-
-      var passThrough = new Point2d(passThroughX, passThroughY);
-      var entities = CivilObjectUtils.GetPropertyValue<object>(writeAlignment, "Entities");
-      if (entities == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Could not access Entities collection for alignment '{alignmentName}'.");
-      }
-
-      // Try AddFixedCurve(passThrough, radius) — Civil 3D 2020+ API
-      var addedEntity = CivilObjectUtils.InvokeMethod(entities, "AddFixedCurve", passThrough, radius)
-        ?? CivilObjectUtils.InvokeMethod(entities, "AddFloatCurve", passThrough, radius);
-
-      return new Dictionary<string, object?>
-      {
-        ["alignmentName"] = alignment.Name,
-        ["operation"] = "add_curve",
-        ["entityIndex"] = GetEntityIndex(addedEntity),
-        ["radius"] = radius,
-        ["success"] = true,
-      };
-    });
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      $"Cannot add the requested radius-{radius} curve at ({passThroughX}, {passThroughY}): Civil 3D 2026 requires an explicit clockwise direction or additional geometry. " +
+      "The current tool schema does not provide enough information, so no curve was created.");
   }
 
   // ─── alignmentAddSpiral ───────────────────────────────────────────────────
@@ -108,47 +73,10 @@ public static class AlignmentEditCommands
     var endRadius = PluginRuntime.GetRequiredDouble(parameters, "endRadius");
     var length = PluginRuntime.GetRequiredDouble(parameters, "length");
 
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
-      var writeAlignment = CivilObjectUtils.GetRequiredObject<Alignment>(
-        transaction, alignment.ObjectId, OpenMode.ForWrite);
-
-      var startPoint = new Point2d(startX, startY);
-      var entities = CivilObjectUtils.GetPropertyValue<object>(writeAlignment, "Entities");
-      if (entities == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Could not access Entities collection for alignment '{alignmentName}'.");
-      }
-
-      // Map spiral type string to enum value if possible; fall back to int 0 = Clothoid
-      object? spiralTypeArg = MapSpiralTypeArg(entities.GetType(), spiralType);
-      object? addedEntity;
-
-      if (spiralTypeArg != null)
-      {
-        addedEntity = CivilObjectUtils.InvokeMethod(
-          entities, "AddFixedSpiral", startPoint, startRadius, endRadius, length, spiralTypeArg);
-      }
-      else
-      {
-        // Older API without spiral type parameter
-        addedEntity = CivilObjectUtils.InvokeMethod(
-          entities, "AddFixedSpiral", startPoint, startRadius, endRadius, length);
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["alignmentName"] = alignment.Name,
-        ["operation"] = "add_spiral",
-        ["spiralType"] = spiralType,
-        ["entityIndex"] = GetEntityIndex(addedEntity),
-        ["length"] = length,
-        ["success"] = true,
-      };
-    });
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      $"Cannot add {spiralType} spiral '{alignmentName}' from ({startX}, {startY}) with radii {startRadius}/{endRadius} and length {length}: " +
+      "the Civil 3D 2026 AddFixedSpiral overloads require a previous entity id and additional geometric constraints not present in this tool schema. No spiral was created.");
   }
 
   // ─── alignmentDeleteEntity ────────────────────────────────────────────────
@@ -164,34 +92,16 @@ public static class AlignmentEditCommands
       var writeAlignment = CivilObjectUtils.GetRequiredObject<Alignment>(
         transaction, alignment.ObjectId, OpenMode.ForWrite);
 
-      var entities = CivilObjectUtils.GetPropertyValue<object>(writeAlignment, "Entities");
-      if (entities == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Could not access Entities collection for alignment '{alignmentName}'.");
-      }
-
-      // Get entity by index from the collection
-      var countProp = entities.GetType().GetProperty("Count");
-      var count = countProp != null ? Convert.ToInt32(countProp.GetValue(entities)) : -1;
-      if (count >= 0 && entityIndex >= count)
+      var entities = writeAlignment.Entities;
+      var count = entities.Count;
+      if (entityIndex < 0 || entityIndex >= count)
       {
         throw new JsonRpcDispatchException(
           "CIVIL3D.INVALID_INPUT",
           $"Entity index {entityIndex} is out of range (alignment has {count} entities).");
       }
 
-      // AlignmentEntityCollection indexer or .Item(index) to retrieve, then .Remove(entity)
-      var entity = GetEntityByIndex(entities, entityIndex);
-      if (entity == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Could not retrieve entity at index {entityIndex} from alignment '{alignmentName}'.");
-      }
-
-      CivilObjectUtils.InvokeMethod(entities, "Remove", entity);
+      entities.RemoveAt(entityIndex);
 
       return new Dictionary<string, object?>
       {
@@ -217,22 +127,17 @@ public static class AlignmentEditCommands
       var writeAlignment = CivilObjectUtils.GetRequiredObject<Alignment>(
         transaction, alignment.ObjectId, OpenMode.ForWrite);
 
-      // Alignment.StationEquations.Add(rawStation, nominalStation)
-      var stationEquations = CivilObjectUtils.GetPropertyValue<object>(writeAlignment, "StationEquations");
-      if (stationEquations == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Could not access StationEquations for alignment '{alignmentName}'.");
-      }
-
-      CivilObjectUtils.InvokeMethod(stationEquations, "Add", rawStation, nominalStation);
+      var equationType = nominalStation >= rawStation
+        ? StationEquationType.Increasing
+        : StationEquationType.Decreasing;
+      writeAlignment.StationEquations.Add(rawStation, nominalStation, equationType);
 
       return new Dictionary<string, object?>
       {
         ["alignmentName"] = alignment.Name,
         ["rawStation"] = rawStation,
         ["nominalStation"] = nominalStation,
+        ["equationType"] = equationType.ToString(),
         ["success"] = true,
       };
     });
@@ -353,74 +258,6 @@ public static class AlignmentEditCommands
 
   // ─── Private helpers ─────────────────────────────────────────────────────
 
-  private static int GetEntityIndex(object? entity)
-  {
-    if (entity == null)
-    {
-      return -1;
-    }
-
-    var indexProp = entity.GetType().GetProperty("EntityNumber")
-      ?? entity.GetType().GetProperty("Index")
-      ?? entity.GetType().GetProperty("EntityIndex");
-    return indexProp != null ? Convert.ToInt32(indexProp.GetValue(entity)) : -1;
-  }
-
-  private static object? GetEntityByIndex(object entities, int index)
-  {
-    // Try indexer (Item property)
-    var itemProp = entities.GetType().GetProperty("Item");
-    if (itemProp != null)
-    {
-      return itemProp.GetValue(entities, new object[] { index });
-    }
-
-    // Fall back to enumerating
-    if (entities is System.Collections.IEnumerable enumerable)
-    {
-      var i = 0;
-      foreach (var entity in enumerable)
-      {
-        if (i++ == index)
-        {
-          return entity;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  private static object? MapSpiralTypeArg(Type entitiesType, string spiralType)
-  {
-    // Look for an AlignmentSpiralType or SpiralType enum on the entities type's assembly
-    var assembly = entitiesType.Assembly;
-    var enumType = assembly.GetTypes()
-      .FirstOrDefault(t => t.IsEnum && (t.Name.Contains("SpiralType") || t.Name.Contains("Spiral")));
-
-    if (enumType == null)
-    {
-      return null;
-    }
-
-    var enumName = spiralType.ToLowerInvariant() switch
-    {
-      "clothoid" => "Clothoid",
-      "cubic" => "CubicParabola",
-      "biquadratic" => "BiQuadratic",
-      _ => "Clothoid",
-    };
-
-    try
-    {
-      return Enum.Parse(enumType, enumName, ignoreCase: true);
-    }
-    catch
-    {
-      return Enum.GetValues(enumType).GetValue(0);
-    }
-  }
-
   private static ObjectId TryCreateWidenTransition(
     Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
     Transaction transaction,
@@ -437,46 +274,8 @@ public static class AlignmentEditCommands
     ObjectId styleId,
     ObjectId labelSetId)
   {
-    // Prefer CreateWideningAlignment if available (Civil 3D 2022+)
-    var wideningMethod = typeof(Alignment).GetMethod(
-      "CreateWideningAlignment",
-      System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-
-    if (wideningMethod != null)
-    {
-      try
-      {
-        var result = wideningMethod.Invoke(null, new object[]
-        {
-          offsetName, baseAlignment.ObjectId,
-          startStation, endStation, startOffset, endOffset,
-          siteId, layerId, styleId, labelSetId,
-        });
-        if (result is ObjectId oid && !oid.IsNull)
-        {
-          return oid;
-        }
-      }
-      catch
-      {
-        // Fall through to constant offset fallback
-      }
-    }
-
-    // Fallback: create a simple constant offset alignment using the average offset
-    var avgOffset = side.ToLowerInvariant() == "right"
-      ? Math.Abs((startOffset + endOffset) / 2.0)
-      : -Math.Abs((startOffset + endOffset) / 2.0);
-
-    var fallbackId = (ObjectId)(
-      CivilObjectUtils.InvokeStaticMethod(typeof(Alignment), "CreateOffsetAlignment",
-        offsetName, baseAlignment.ObjectId, avgOffset, siteId, layerId, styleId, labelSetId)
-      ?? CivilObjectUtils.InvokeStaticMethod(typeof(Alignment), "CreateOffsetAlignment",
-        offsetName, baseAlignment.ObjectId, avgOffset, layerId, styleId, labelSetId)
-      ?? throw new JsonRpcDispatchException(
-        "CIVIL3D.TRANSACTION_FAILED",
-        "Neither CreateWideningAlignment nor CreateOffsetAlignment is available in this Civil 3D version."));
-
-    return fallbackId;
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 does not expose Alignment.CreateWideningAlignment in the managed API. No constant-offset substitute was created.");
   }
 }

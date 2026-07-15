@@ -202,7 +202,7 @@ describe("domain manifest migration", () => {
     expect(parcelReport).toBeDefined();
   });
 
-  it("generates canonical survey domain with database, figure, and processing aliases", () => {
+  it("advertises only supported managed-API survey queries", () => {
     const survey = GENERATED_TOOL_CATALOG_ENTRIES.find((e) => e.toolName === "civil3d_survey");
     const databaseCreate = GENERATED_TOOL_CATALOG_ENTRIES.find((e) => e.toolName === "civil3d_survey_database_create");
     const figureList = GENERATED_TOOL_CATALOG_ENTRIES.find((e) => e.toolName === "civil3d_survey_figure_list");
@@ -212,18 +212,18 @@ describe("domain manifest migration", () => {
 
     expect(survey).toBeDefined();
     expect(survey!.operations).toContain("database_list");
-    expect(survey!.operations).toContain("database_create");
     expect(survey!.operations).toContain("figure_list");
     expect(survey!.operations).toContain("observation_list");
-    expect(survey!.operations).toContain("network_adjust");
-    expect(survey!.operations).toContain("landxml_import");
-    expect(survey!.safeForRetry).toBe(false);
+    expect(survey!.operations).not.toContain("database_create");
+    expect(survey!.operations).not.toContain("network_adjust");
+    expect(survey!.operations).not.toContain("landxml_import");
+    expect(survey!.safeForRetry).toBe(true);
 
-    expect(databaseCreate).toBeDefined();
+    expect(databaseCreate).toBeUndefined();
     expect(figureList).toBeDefined();
     expect(observationList).toBeDefined();
-    expect(networkAdjust).toBeDefined();
-    expect(landxmlImport).toBeDefined();
+    expect(networkAdjust).toBeUndefined();
+    expect(landxmlImport).toBeUndefined();
   });
 
   it("generates canonical plan production domain with sheet and publish aliases", () => {
@@ -238,14 +238,14 @@ describe("domain manifest migration", () => {
     expect(planProduction!.operations).toContain("sheet_set_list");
     expect(planProduction!.operations).toContain("sheet_set_create");
     expect(planProduction!.operations).toContain("sheet_add");
-    expect(planProduction!.operations).toContain("plan_profile_sheet_create");
+    expect(planProduction!.operations).not.toContain("plan_profile_sheet_create");
     expect(planProduction!.operations).toContain("sheet_publish_pdf");
     expect(planProduction!.operations).toContain("sheet_set_export");
     expect(planProduction!.safeForRetry).toBe(false);
 
     expect(sheetSetCreate).toBeDefined();
     expect(sheetAdd).toBeDefined();
-    expect(planProfileCreate).toBeDefined();
+    expect(planProfileCreate).toBeUndefined();
     expect(sheetPublish).toBeDefined();
     expect(sheetSetExport).toBeDefined();
   });
@@ -280,7 +280,7 @@ describe("domain manifest migration", () => {
     expect(workflow!.operations).toContain("pipe_network_design");
     expect(workflow!.operations).toContain("plan_production_publish");
     expect(workflow!.operations).toContain("qc_fix_and_verify");
-    expect(workflow!.operations).toContain("survey_import_adjust_figures");
+    expect(workflow!.operations).not.toContain("survey_import_adjust_figures");
     expect(workflow!.safeForRetry).toBe(false);
 
     expect(corridorQcReport).toBeDefined();
@@ -295,7 +295,7 @@ describe("domain manifest migration", () => {
     expect(pipeNetworkDesign).toBeDefined();
     expect(planProductionPublish).toBeDefined();
     expect(qcFixAndVerify).toBeDefined();
-    expect(surveyImportAdjustFigures).toBeDefined();
+    expect(surveyImportAdjustFigures).toBeUndefined();
   });
 
   it("generates canonical project domain with data-shortcut aliases", () => {
@@ -401,20 +401,23 @@ describe("domain manifest migration", () => {
     const cost = GENERATED_TOOL_CATALOG_ENTRIES.find((e) => e.toolName === "civil3d_cost_estimation");
 
     expect(quantity).toBeDefined();
-    expect(quantity!.operations).toContain("corridor_volumes");
+    expect(quantity!.operations).not.toContain("corridor_volumes");
     expect(quantity!.operations).toContain("earthwork_summary");
     expect(quantity!.safeForRetry).toBe(false);
 
     expect(superelevation).toBeDefined();
-    expect(superelevation!.operations).toContain("design_check");
+    expect(superelevation!.operations).not.toContain("design_check");
+    expect(GENERATED_TOOL_CATALOG_ENTRIES.find((e) => e.toolName === "civil3d_superelevation_design_check")).toBeDefined();
     expect(intersection).toBeDefined();
-    expect(intersection!.operations).toContain("create");
+    expect(intersection!.operations).not.toContain("create");
     expect(sightDistance).toBeDefined();
     expect(sightDistance!.operations).toContain("stopping_distance_check");
     expect(detention).toBeDefined();
     expect(detention!.operations).toContain("stage_storage");
     expect(slope).toBeDefined();
-    expect(slope!.operations).toContain("stability_check");
+    expect(slope!.operations).toBeUndefined();
+    expect(GENERATED_TOOL_CATALOG_ENTRIES.find((e) => e.toolName === "civil3d_slope_geometry_calculate")).toBeDefined();
+    expect(GENERATED_TOOL_CATALOG_ENTRIES.find((e) => e.toolName === "civil3d_slope_stability_check")).toBeUndefined();
     expect(cost).toBeDefined();
     expect(cost!.operations).toContain("material_cost_estimate");
   });
@@ -439,7 +442,11 @@ describe("domain manifest migration", () => {
     expect(coordinateSystem!.operations).toContain("transform");
 
     expect(job).toBeDefined();
+    expect(job!.operations).toContain("start");
     expect(job!.operations).toContain("cancel");
+    const jobDefinition = MIGRATED_DOMAIN_DEFINITIONS.find((definition) => definition.domain === "job");
+    expect(jobDefinition?.actions.cancel.safeForRetry).toBe(true);
+    expect(jobDefinition?.actions.cancel.capabilities).toEqual(["manage"]);
   });
 
   it("generates plugin and docs helper domains including orchestrate", () => {
@@ -515,8 +522,8 @@ describe("domain manifest migration", () => {
     expect(parcel!.operations).toContain("create");
     expect(parcel!.operations).toContain("report");
     expect(survey).toBeDefined();
-    expect(survey!.operations).toContain("database_create");
-    expect(survey!.operations).toContain("network_adjust");
+    expect(survey!.operations).toContain("database_list");
+    expect(survey!.operations).toContain("observation_list");
     expect(planProduction).toBeDefined();
     expect(planProduction!.operations).toContain("sheet_set_create");
     expect(planProduction!.operations).toContain("sheet_set_export");
@@ -547,7 +554,7 @@ describe("domain manifest migration", () => {
     expect(detention).toBeDefined();
     expect(detention!.operations).toContain("basin_size_calculate");
     expect(slope).toBeDefined();
-    expect(slope!.operations).toContain("geometry_calculate");
+    expect(slope!.pluginMethods).toContain("calculateSlopeGeometry");
     expect(cost).toBeDefined();
     expect(cost!.operations).toContain("pay_items_export");
     expect(geometry).toBeDefined();

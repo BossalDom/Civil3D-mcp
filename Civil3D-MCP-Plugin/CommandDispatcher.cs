@@ -6,11 +6,14 @@ public static class CommandDispatcher
 {
   public static Task<object?> DispatchAsync(string method, JsonObject? parameters, CancellationToken cancellationToken)
   {
-    return method switch
-    {
+  return method switch
+  {
       "getCivil3DHealth" => DrawingCommands.GetCivil3DHealthAsync(),
       "getDrawingInfo" => DrawingCommands.GetDrawingInfoAsync(),
+      "getProjectContext" => DrawingCommands.GetProjectContextAsync(parameters),
       "getDrawingSettings" => DrawingCommands.GetDrawingSettingsAsync(),
+      "getCoordinateSystemInfo" => CoordinateSystemCommands.GetCoordinateSystemInfoAsync(),
+      "transformCoordinates" => CoordinateSystemCommands.TransformCoordinatesAsync(parameters),
       "corridorQcReportWorkflow" => WorkflowCommands.CorridorQcReportWorkflowAsync(parameters),
       "surfaceComparisonReportWorkflow" => WorkflowCommands.SurfaceComparisonReportWorkflowAsync(parameters),
       "dataShortcutPublishSyncWorkflow" => WorkflowCommands.DataShortcutPublishSyncWorkflowAsync(parameters),
@@ -34,6 +37,7 @@ public static class CommandDispatcher
       "getSelectedCivilObjectsInfo" => DrawingCommands.GetSelectedCivilObjectsInfoAsync(parameters),
       "getJobStatus" => Task.FromResult<object?>(JobCommands.GetJobStatus(parameters)),
       "cancelJob" => Task.FromResult<object?>(JobCommands.CancelJob(parameters)),
+      "startJob" => JobCommands.StartJobAsync(parameters),
       "listCogoPoints" => PointCommands.ListCogoPointsAsync(parameters),
       "getCogoPoint" => PointCommands.GetCogoPointAsync(parameters),
       "createCogoPoints" => PointCommands.CreateCogoPointsAsync(parameters),
@@ -43,6 +47,7 @@ public static class CommandDispatcher
       "listAlignments" => AlignmentCommands.ListAlignmentsAsync(),
       "getAlignment" => AlignmentCommands.GetAlignmentAsync(parameters),
       "alignmentStationToPoint" => AlignmentCommands.StationToPointAsync(parameters),
+      "alignmentSampleStations" => AlignmentCommands.SampleStationsAsync(parameters),
       "alignmentPointToStation" => AlignmentCommands.PointToStationAsync(parameters),
       "createAlignment" => AlignmentCommands.CreateAlignmentAsync(parameters),
       "deleteAlignment" => AlignmentCommands.DeleteAlignmentAsync(parameters),
@@ -58,6 +63,8 @@ public static class CommandDispatcher
       "getSurfaceElevation" => SurfaceCommands.GetSurfaceElevationAsync(parameters),
       "getSurfaceElevationsAlong" => SurfaceCommands.GetSurfaceElevationsAlongAsync(parameters),
       "getSurfaceStatistics" => SurfaceCommands.GetSurfaceStatisticsAsync(parameters),
+      "listAssemblies" => AssemblyCreationCommands.ListAssembliesAsync(),
+      "getAssembly" => AssemblyCreationCommands.GetAssemblyAsync(parameters),
       "createSurface" => SurfaceCommands.CreateSurfaceAsync(parameters),
       "deleteSurface" => SurfaceCommands.DeleteSurfaceAsync(parameters),
       "addSurfacePoints" => SurfaceCommands.AddSurfacePointsAsync(parameters),
@@ -65,13 +72,14 @@ public static class CommandDispatcher
       "addSurfaceBoundary" => SurfaceCommands.AddSurfaceBoundaryAsync(parameters),
       "extractSurfaceContours" => SurfaceCommands.ExtractSurfaceContoursAsync(parameters),
       "computeSurfaceVolume" => SurfaceCommands.ComputeSurfaceVolumeAsync(parameters),
+      "addSurfaceWatershed" => SurfaceCommands.AddSurfaceWatershedsAsync(parameters),
+      "addSurfaceWatersheds" => SurfaceCommands.AddSurfaceWatershedsAsync(parameters),
       "calculateSurfaceVolume" => SurfaceCommands.CalculateSurfaceVolumeAsync(parameters),
       "getSurfaceVolumeReport" => SurfaceCommands.GetSurfaceVolumeReportAsync(parameters),
       "calculateSurfaceVolumeByRegion" => SurfaceCommands.CalculateSurfaceVolumeByRegionAsync(parameters),
       "analyzeSurfaceSlope" => SurfaceCommands.AnalyzeSurfaceSlopeAsync(parameters),
       "analyzeSurfaceElevation" => SurfaceCommands.AnalyzeSurfaceElevationAsync(parameters),
       "analyzeSurfaceDirections" => SurfaceCommands.AnalyzeSurfaceDirectionsAsync(parameters),
-      "addSurfaceWatersheds" => SurfaceCommands.AddSurfaceWatershedsAsync(parameters),
       "setSurfaceContourInterval" => SurfaceCommands.SetSurfaceContourIntervalAsync(parameters),
       "getSurfaceStatisticsDetailed" => SurfaceCommands.GetSurfaceStatisticsDetailedAsync(parameters),
       "sampleSurfaceElevations" => SurfaceCommands.SampleSurfaceElevationsAsync(parameters),
@@ -79,6 +87,16 @@ public static class CommandDispatcher
       "listSampleLineGroups" => SectionCommands.ListSampleLineGroupsAsync(parameters),
       "getSectionData" => SectionCommands.GetSectionDataAsync(parameters),
       "createSampleLines" => SectionCommands.CreateSampleLinesAsync(parameters),
+      "createSectionViews" => SectionCommands.CreateSectionViewsAsync(parameters),
+      "listSectionViews" => SectionCommands.ListSectionViewsAsync(parameters),
+      "updateSectionViewStyles" => SectionCommands.UpdateSectionViewStylesAsync(parameters),
+      "createSectionViewGroup" => SectionCommands.CreateSectionViewGroupAsync(parameters),
+      "exportSectionData" => SectionCommands.ExportSectionDataAsync(parameters),
+      // Parcels
+      "createParcel" => ParcelEditingCommands.CreateParcelAsync(parameters),
+      "editParcel" => ParcelEditingCommands.EditParcelAsync(parameters),
+      "adjustParcelLotLine" => ParcelEditingCommands.AdjustParcelLotLineAsync(parameters),
+      "reportParcels" => ParcelEditingCommands.ReportParcelsAsync(parameters),
       "listHydrologyCapabilities" => HydrologyCommands.ListHydrologyCapabilitiesAsync(),
       "traceHydrologyFlowPath" => HydrologyCommands.TraceFlowPathAsync(parameters),
       "findHydrologyLowPoint" => HydrologyCommands.FindLowPointAsync(parameters),
@@ -94,6 +112,16 @@ public static class CommandDispatcher
       "getCorridorSurfaces" => CorridorCommands.GetCorridorSurfacesAsync(parameters),
       "getCorridorFeatureLines" => CorridorCommands.GetCorridorFeatureLinesAsync(parameters),
       "computeCorridorVolumes" => CorridorCommands.ComputeCorridorVolumesAsync(parameters),
+      "getCorridorTargetMappings" => CorridorEditingCommands.GetCorridorTargetMappingsAsync(parameters),
+      "setCorridorTargetMappings" => CorridorEditingCommands.SetCorridorTargetMappingsAsync(parameters),
+      "addCorridorRegion" => CorridorEditingCommands.AddCorridorRegionAsync(parameters),
+      "deleteCorridorRegion" => CorridorEditingCommands.DeleteCorridorRegionAsync(parameters),
+      "listIntersections" => IntersectionCommands.ListIntersectionsAsync(parameters),
+      "createIntersection" => IntersectionCommands.CreateIntersectionAsync(parameters),
+      "getIntersection" => IntersectionCommands.GetIntersectionAsync(parameters),
+      "listParcels" => ParcelEditingCommands.ListParcelsAsync(parameters),
+      "getParcel" => ParcelEditingCommands.GetParcelAsync(parameters),
+      "listParcelSites" => ParcelEditingCommands.ListParcelSitesAsync(),
       // Pipe networks (gravity)
       "listPipeNetworks" => PipeNetworkCommands.ListPipeNetworksAsync(),
       "getPipeNetwork" => PipeNetworkCommands.GetPipeNetworkAsync(parameters),
@@ -158,6 +186,10 @@ public static class CommandDispatcher
       "createSurveyDatabase" => CogoCommands.CreateSurveyDatabaseAsync(parameters),
       "listSurveyFigures" => CogoCommands.ListSurveyFiguresAsync(parameters),
       "getSurveyFigure" => CogoCommands.GetSurveyFigureAsync(parameters),
+      "listSurveyObservations" => CogoCommands.ListSurveyObservationsAsync(parameters),
+      "adjustSurveyNetwork" => CogoCommands.AdjustSurveyNetworkAsync(parameters),
+      "createSurveyFigure" => CogoCommands.CreateSurveyFigureAsync(parameters),
+      "importSurveyLandXml" => CogoCommands.ImportSurveyLandXmlAsync(parameters),
       // Alignment editing
       "alignmentAddTangent" => AlignmentEditCommands.AddTangentAsync(parameters),
       "alignmentAddCurve" => AlignmentEditCommands.AddCurveAsync(parameters),
@@ -211,11 +243,16 @@ public static class CommandDispatcher
       "qtyMaterialListGet" => QuantityCommands.QtyMaterialListGetAsync(parameters),
       "qtyEarthworkSummary" => QuantityCommands.QtyEarthworkSummaryAsync(parameters),
       // Pipe hydraulics
-      "calculatePipeNetworkHgl" => PipeHydraulicsCommands.CalculatePipeNetworkHglAsync(parameters),
-      "analyzePipeNetworkHydraulics" => PipeHydraulicsCommands.AnalyzePipeNetworkHydraulicsAsync(parameters),
-      "getPipeStructureProperties" => PipeHydraulicsCommands.GetPipeStructurePropertiesAsync(parameters),
+    "calculatePipeNetworkHgl" => PipeHydraulicsCommands.CalculatePipeNetworkHglAsync(parameters),
+    "analyzePipeNetworkHydraulics" => PipeHydraulicsCommands.AnalyzePipeNetworkHydraulicsAsync(parameters),
+    "getPipeStructureProperties" => PipeHydraulicsCommands.GetPipeStructurePropertiesAsync(parameters),
+      // Superelevation tools
+    "getSuperelevation" => SuperelevationCommands.GetSuperelevationAsync(parameters),
+    "setSuperelevation" => SuperelevationCommands.SetSuperelevationAsync(parameters),
+    "checkSuperelevationDesign" => SuperelevationCommands.CheckSuperelevationDesignAsync(parameters),
+    "generateSuperelevationReport" => SuperelevationCommands.GenerateSuperelevationReportAsync(parameters),
       // Assembly creation
-      "createAssembly" => AssemblyCreationCommands.CreateAssemblyAsync(parameters),
+    "createAssembly" => AssemblyCreationCommands.CreateAssemblyAsync(parameters),
       "createSubassembly" => AssemblyCreationCommands.CreateSubassemblyAsync(parameters),
       "editAssembly" => AssemblyCreationCommands.EditAssemblyAsync(parameters),
       // Sight distance
@@ -234,6 +271,8 @@ public static class CommandDispatcher
       "listLabelStyles" => LabelCommands.ListLabelStylesAsync(parameters),
       "listLabels" => LabelCommands.ListLabelsAsync(parameters),
       "addLabel" => LabelCommands.AddLabelAsync(parameters),
+      "listStyles" => StyleCommands.ListStylesAsync(parameters),
+      "getStyle" => StyleCommands.GetStyleAsync(parameters),
       // Catchment management
       "listCatchmentGroups" => CatchmentCommands.ListCatchmentGroupsAsync(),
       "getCatchmentGroup" => CatchmentCommands.GetCatchmentGroupAsync(parameters),
@@ -252,7 +291,7 @@ public static class CommandDispatcher
       "importStm" => StmCommands.ImportStmAsync(parameters),
       "openStormSanitaryAnalysis" => StmCommands.OpenStormSanitaryAnalysisAsync(parameters),
       "listSsaCapabilities" => StmCommands.ListSsaCapabilitiesAsync(),
-      _ => throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Plugin method '{method}' is not implemented yet."),
+      _ => throw new JsonRpcDispatchException("CIVIL3D.METHOD_NOT_FOUND", $"Plugin method '{method}' is not implemented yet."),
     };
   }
 }

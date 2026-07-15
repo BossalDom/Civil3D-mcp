@@ -372,27 +372,6 @@ const EXPLICIT_TOOL_CATALOG: ToolCatalogEntry[] = [
     ),
   },
   {
-    intent: "check_slope_stability",
-    title: "Check slope stability",
-    domain: "slope_analysis",
-    toolName: "civil3d_slope_stability_check",
-    action: "check",
-    keywords: ["slope stability", "check slopes", "slope stability check", "cut fill stability"],
-    requiredFields: ["alignmentName"],
-    description: "Checks cut/fill slope stability along a named alignment.",
-    buildToolArgs: buildPassthroughArgs(
-      ["alignmentName", "surfaceName"],
-      {
-        maxCutSlopeRatio: 1.5,
-        maxFillSlopeRatio: 2.0,
-        maxCutHeight: 30,
-        maxFillHeight: 40,
-        stationInterval: 25,
-        soilType: "granular",
-      },
-    ),
-  },
-  {
     intent: "export_pay_items",
     title: "Export pay items",
     domain: "cost_estimation",

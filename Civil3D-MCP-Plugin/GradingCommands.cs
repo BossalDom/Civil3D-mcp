@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
@@ -62,9 +61,7 @@ public static class GradingCommands
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      var sitesProperty = civilDoc.GetType().GetProperty("Sites", BindingFlags.Public | BindingFlags.Instance);
-      var sites = sitesProperty?.GetValue(civilDoc);
-      var siteIds = CivilObjectUtils.ToObjectIds(sites);
+      var siteIds = civilDoc.GetSiteIds().Cast<ObjectId>();
       var firstSiteId = siteIds.FirstOrDefault();
 
       if (firstSiteId == ObjectId.Null)
@@ -73,21 +70,12 @@ public static class GradingCommands
       }
 
       var siteObj = transaction.GetObject(firstSiteId, OpenMode.ForRead);
-      var gradingGroupsProperty = siteObj.GetType().GetProperty("GradingGroups", BindingFlags.Public | BindingFlags.Instance);
-      var gradingGroups = gradingGroupsProperty?.GetValue(siteObj);
+      var gradingGroups = Civil3DCompatibility.GetPropertyValue(siteObj, "GradingGroups");
 
       // Try Add(name, useProjection) or Add(name)
       object? newGroupId = null;
-      var addMethods = gradingGroups?.GetType().GetMethods().Where(m => m.Name == "Add").ToArray();
-      if (addMethods != null)
-      {
-        var addWithProjection = addMethods.FirstOrDefault(m => m.GetParameters().Length == 2);
-        var addSimple = addMethods.FirstOrDefault(m => m.GetParameters().Length == 1);
-
-        newGroupId = addWithProjection != null
-          ? addWithProjection.Invoke(gradingGroups, new object[] { name, useProjection })
-          : addSimple?.Invoke(gradingGroups, new object[] { name });
-      }
+      if (!Civil3DCompatibility.TryInvokeMethod(gradingGroups, "Add", out newGroupId, name, useProjection))
+        Civil3DCompatibility.TryInvokeMethod(gradingGroups, "Add", out newGroupId, name);
 
       if (newGroupId == null)
       {
@@ -97,8 +85,7 @@ public static class GradingCommands
       var newGroupObjectId = (ObjectId)newGroupId;
       var newGroup = transaction.GetObject(newGroupObjectId, OpenMode.ForWrite);
 
-      var descriptionProp = newGroup.GetType().GetProperty("Description", BindingFlags.Public | BindingFlags.Instance);
-      descriptionProp?.SetValue(newGroup, description);
+      Civil3DCompatibility.TrySetProperty(newGroup, "Description", description);
 
       return new Dictionary<string, object?>
       {
@@ -143,15 +130,17 @@ public static class GradingCommands
     {
       var group = FindGradingGroupByName(civilDoc, transaction, name, OpenMode.ForRead);
 
-      var cutVolume = CivilObjectUtils.GetDoubleProperty(group, "CutVolume") ?? 0;
-      var fillVolume = CivilObjectUtils.GetDoubleProperty(group, "FillVolume") ?? 0;
-      var netVolume = cutVolume - fillVolume;
+      var cutVolume = CivilObjectUtils.GetDoubleProperty(group, "CutVolume");
+      var fillVolume = CivilObjectUtils.GetDoubleProperty(group, "FillVolume");
+      if (!cutVolume.HasValue || !fillVolume.HasValue)
+        throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", $"Grading group '{name}' does not expose readable cut/fill volumes. Zero volumes were not substituted.");
+      var netVolume = cutVolume.Value - fillVolume.Value;
 
       return new Dictionary<string, object?>
       {
         ["groupName"] = name,
-        ["cutVolume"] = cutVolume,
-        ["fillVolume"] = fillVolume,
+        ["cutVolume"] = cutVolume.Value,
+        ["fillVolume"] = fillVolume.Value,
         ["netVolume"] = netVolume,
         ["units"] = new Dictionary<string, string> { ["volume"] = CivilObjectUtils.VolumeUnits(database) },
       };
@@ -172,25 +161,12 @@ public static class GradingCommands
       var group = FindGradingGroupByName(civilDoc, transaction, name, OpenMode.ForWrite);
 
       // CreateSurface() or CreateSurface(surfaceName) depending on API version
-      var createMethod = group.GetType().GetMethods()
-        .Where(m => m.Name == "CreateSurface")
-        .OrderByDescending(m => m.GetParameters().Length)
-        .FirstOrDefault();
-
-      if (createMethod == null)
-      {
-        throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "CreateSurface method not found on grading group.");
-      }
-
       object? resultId;
-      if (createMethod.GetParameters().Length >= 1 && surfaceName != null)
-      {
-        resultId = createMethod.Invoke(group, new object[] { surfaceName });
-      }
-      else
-      {
-        resultId = createMethod.Invoke(group, Array.Empty<object>());
-      }
+      var invoked = surfaceName != null
+        ? Civil3DCompatibility.TryInvokeMethod(group, "CreateSurface", out resultId, surfaceName)
+        : Civil3DCompatibility.TryInvokeMethod(group, "CreateSurface", out resultId);
+      if (!invoked)
+        throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "CreateSurface method not found on grading group.");
 
       return new Dictionary<string, object?>
       {
@@ -264,30 +240,15 @@ public static class GradingCommands
         ?? throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Feature line '{featureLineName}' not found.");
 
       // Try to invoke AddGrading on the group
-      var addMethod = group.GetType().GetMethods()
-        .FirstOrDefault(m => m.Name == "AddGrading" || m.Name == "CreateGrading");
-
-      if (addMethod == null)
-      {
-        throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "AddGrading/CreateGrading method not found on grading group.");
-      }
-
       var featureLineId = featureLine.ObjectId;
       object? gradingId;
-
-      if (addMethod.GetParameters().Length >= 3 && criteriaName != null)
-      {
-        var criteriaId = FindGradingCriteriaId(civilDoc, transaction, criteriaName);
-        gradingId = addMethod.Invoke(group, new object[] { featureLineId, criteriaId, side });
-      }
-      else if (addMethod.GetParameters().Length >= 2)
-      {
-        gradingId = addMethod.Invoke(group, new object[] { featureLineId, side });
-      }
-      else
-      {
-        gradingId = addMethod.Invoke(group, new object[] { featureLineId });
-      }
+      var invoked = criteriaName != null
+        ? Civil3DCompatibility.TryInvokeMethod(group, "AddGrading", out gradingId, featureLineId, FindGradingCriteriaId(civilDoc, transaction, criteriaName), side)
+          || Civil3DCompatibility.TryInvokeMethod(group, "CreateGrading", out gradingId, featureLineId, FindGradingCriteriaId(civilDoc, transaction, criteriaName), side)
+        : Civil3DCompatibility.TryInvokeMethod(group, "AddGrading", out gradingId, featureLineId, side)
+          || Civil3DCompatibility.TryInvokeMethod(group, "CreateGrading", out gradingId, featureLineId, side);
+      if (!invoked)
+        throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "AddGrading/CreateGrading method not found on grading group.");
 
       return new Dictionary<string, object?>
       {
@@ -338,17 +299,15 @@ public static class GradingCommands
       var criteriaList = new List<Dictionary<string, object?>>();
 
       // Try GradingCriteriaSets property path
-      var criteriaSetsProp = civilDoc.GetType().GetProperty("GradingCriteriaSets", BindingFlags.Public | BindingFlags.Instance);
-      var criteriaSets = criteriaSetsProp?.GetValue(civilDoc);
+      var criteriaSets = Civil3DCompatibility.GetPropertyValue(civilDoc, "GradingCriteriaSets");
 
       foreach (var setId in CivilObjectUtils.ToObjectIds(criteriaSets))
       {
         var setObj = transaction.GetObject(setId, OpenMode.ForRead);
         var setName = CivilObjectUtils.GetName(setObj) ?? string.Empty;
 
-        var criteriaIdsProperty = setObj.GetType().GetProperty("CriteriaIds", BindingFlags.Public | BindingFlags.Instance)
-          ?? setObj.GetType().GetProperty("Criteria", BindingFlags.Public | BindingFlags.Instance);
-        var criteriaIds = criteriaIdsProperty?.GetValue(setObj);
+        var criteriaIds = Civil3DCompatibility.GetPropertyValue(setObj, "CriteriaIds")
+          ?? Civil3DCompatibility.GetPropertyValue(setObj, "Criteria");
 
         foreach (var criteriaId in CivilObjectUtils.ToObjectIds(criteriaIds))
         {
@@ -477,16 +436,14 @@ public static class GradingCommands
       }
       var x = pt["x"]?.GetValue<double>() ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Point missing x.");
       var y = pt["y"]?.GetValue<double>() ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Point missing y.");
-      var z = pt["z"]?.GetValue<double>() ?? 0.0;
+      var z = pt["z"]?.GetValue<double>() ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Feature-line point missing z; elevation 0 will not be assumed.");
       return new Point3d(x, y, z);
     }).ToList();
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       // Get or find a site to add the feature line to
-      var sitesProperty = civilDoc.GetType().GetProperty("Sites", BindingFlags.Public | BindingFlags.Instance);
-      var sites = sitesProperty?.GetValue(civilDoc);
-      var siteIds = CivilObjectUtils.ToObjectIds(sites);
+      var siteIds = civilDoc.GetSiteIds().Cast<ObjectId>();
       var firstSiteId = siteIds.FirstOrDefault();
 
       // Build a Point3dCollection for the feature line
@@ -496,29 +453,14 @@ public static class GradingCommands
         pointCollection.Add(pt);
       }
 
-      // Use the static FeatureLine.Create method (if available) or direct constructor
-      var featureLineType = FindType("Autodesk.Civil.DatabaseServices.FeatureLine");
-      object? newId = null;
-
-      if (featureLineType != null)
-      {
-        var createMethod = featureLineType.GetMethods(BindingFlags.Static | BindingFlags.Public)
-          .FirstOrDefault(m => m.Name == "Create" && m.GetParameters().Length >= 2);
-
-        if (createMethod != null)
-        {
-          var modelSpaceId = database.CurrentSpaceId;
-          var siteArg = firstSiteId == ObjectId.Null ? (object)ObjectId.Null : firstSiteId;
-          newId = createMethod.Invoke(null, new object[] { modelSpaceId, siteArg, pointCollection });
-        }
-      }
-
-      if (newId == null)
-      {
-        throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "FeatureLine.Create method not found. Ensure Civil3D API is available.");
-      }
-
-      var newObjectId = (ObjectId)newId;
+      var modelSpace = CivilObjectUtils.GetRequiredObject<BlockTableRecord>(transaction, database.CurrentSpaceId, OpenMode.ForWrite);
+      using var sourcePolyline = new Polyline3d(Poly3dType.SimplePoly, pointCollection, false);
+      var sourceId = modelSpace.AppendEntity(sourcePolyline);
+      transaction.AddNewlyCreatedDBObject(sourcePolyline, true);
+      var newObjectId = firstSiteId.IsNull
+        ? Autodesk.Civil.DatabaseServices.FeatureLine.Create(name, sourceId)
+        : Autodesk.Civil.DatabaseServices.FeatureLine.Create(name, sourceId, firstSiteId);
+      sourcePolyline.Erase();
       var fl = transaction.GetObject(newObjectId, OpenMode.ForWrite);
 
       // Set name and layer
@@ -547,14 +489,10 @@ public static class GradingCommands
     Autodesk.Civil.ApplicationServices.CivilDocument civilDoc,
     Transaction transaction)
   {
-    var sitesProperty = civilDoc.GetType().GetProperty("Sites", BindingFlags.Public | BindingFlags.Instance);
-    var sites = sitesProperty?.GetValue(civilDoc);
-
-    foreach (var siteId in CivilObjectUtils.ToObjectIds(sites))
+    foreach (ObjectId siteId in civilDoc.GetSiteIds())
     {
       var siteObj = transaction.GetObject(siteId, OpenMode.ForRead);
-      var gradingGroupsProp = siteObj.GetType().GetProperty("GradingGroups", BindingFlags.Public | BindingFlags.Instance);
-      var gradingGroups = gradingGroupsProp?.GetValue(siteObj);
+      var gradingGroups = Civil3DCompatibility.GetPropertyValue(siteObj, "GradingGroups");
 
       foreach (var groupId in CivilObjectUtils.ToObjectIds(gradingGroups))
       {
@@ -569,14 +507,10 @@ public static class GradingCommands
     string name,
     OpenMode mode)
   {
-    var sitesProperty = civilDoc.GetType().GetProperty("Sites", BindingFlags.Public | BindingFlags.Instance);
-    var sites = sitesProperty?.GetValue(civilDoc);
-
-    foreach (var siteId in CivilObjectUtils.ToObjectIds(sites))
+    foreach (ObjectId siteId in civilDoc.GetSiteIds())
     {
       var siteObj = transaction.GetObject(siteId, OpenMode.ForRead);
-      var gradingGroupsProp = siteObj.GetType().GetProperty("GradingGroups", BindingFlags.Public | BindingFlags.Instance);
-      var gradingGroups = gradingGroupsProp?.GetValue(siteObj);
+      var gradingGroups = Civil3DCompatibility.GetPropertyValue(siteObj, "GradingGroups");
 
       foreach (var groupId in CivilObjectUtils.ToObjectIds(gradingGroups))
       {
@@ -595,9 +529,8 @@ public static class GradingCommands
 
   private static IEnumerable<DBObject> GetGradingsFromGroup(DBObject group, Transaction transaction)
   {
-    var gradingIdsProp = group.GetType().GetProperty("GradingIds", BindingFlags.Public | BindingFlags.Instance)
-      ?? group.GetType().GetProperty("Gradings", BindingFlags.Public | BindingFlags.Instance);
-    var gradingIds = gradingIdsProp?.GetValue(group);
+    var gradingIds = Civil3DCompatibility.GetPropertyValue(group, "GradingIds")
+      ?? Civil3DCompatibility.GetPropertyValue(group, "Gradings");
 
     foreach (var id in CivilObjectUtils.ToObjectIds(gradingIds))
     {
@@ -658,15 +591,13 @@ public static class GradingCommands
     Transaction transaction,
     string criteriaName)
   {
-    var criteriaSetsProp = civilDoc.GetType().GetProperty("GradingCriteriaSets", BindingFlags.Public | BindingFlags.Instance);
-    var criteriaSets = criteriaSetsProp?.GetValue(civilDoc);
+    var criteriaSets = Civil3DCompatibility.GetPropertyValue(civilDoc, "GradingCriteriaSets");
 
     foreach (var setId in CivilObjectUtils.ToObjectIds(criteriaSets))
     {
       var setObj = transaction.GetObject(setId, OpenMode.ForRead);
-      var criteriaIdsProperty = setObj.GetType().GetProperty("CriteriaIds", BindingFlags.Public | BindingFlags.Instance)
-        ?? setObj.GetType().GetProperty("Criteria", BindingFlags.Public | BindingFlags.Instance);
-      var criteriaIds = criteriaIdsProperty?.GetValue(setObj);
+      var criteriaIds = Civil3DCompatibility.GetPropertyValue(setObj, "CriteriaIds")
+        ?? Civil3DCompatibility.GetPropertyValue(setObj, "Criteria");
 
       foreach (var criteriaId in CivilObjectUtils.ToObjectIds(criteriaIds))
       {
@@ -683,9 +614,8 @@ public static class GradingCommands
 
   private static Dictionary<string, object?> ToGradingGroupSummary(DBObject group, Transaction transaction)
   {
-    var gradingIds = group.GetType().GetProperty("GradingIds", BindingFlags.Public | BindingFlags.Instance)
-      ?? group.GetType().GetProperty("Gradings", BindingFlags.Public | BindingFlags.Instance);
-    var ids = gradingIds?.GetValue(group);
+    var ids = Civil3DCompatibility.GetPropertyValue(group, "GradingIds")
+      ?? Civil3DCompatibility.GetPropertyValue(group, "Gradings");
     var count = CivilObjectUtils.ToObjectIds(ids).Count();
 
     return new Dictionary<string, object?>
@@ -704,8 +634,8 @@ public static class GradingCommands
       .Select(g => ToGradingSummary(g))
       .ToList();
 
-    var cutVolume = CivilObjectUtils.GetDoubleProperty(group, "CutVolume") ?? 0;
-    var fillVolume = CivilObjectUtils.GetDoubleProperty(group, "FillVolume") ?? 0;
+    var cutVolume = CivilObjectUtils.GetDoubleProperty(group, "CutVolume");
+    var fillVolume = CivilObjectUtils.GetDoubleProperty(group, "FillVolume");
 
     return new Dictionary<string, object?>
     {
@@ -715,7 +645,7 @@ public static class GradingCommands
       ["gradingCount"] = gradings.Count,
       ["cutVolume"] = cutVolume,
       ["fillVolume"] = fillVolume,
-      ["netVolume"] = cutVolume - fillVolume,
+      ["netVolume"] = cutVolume.HasValue && fillVolume.HasValue ? cutVolume.Value - fillVolume.Value : null,
       ["isValid"] = CivilObjectUtils.GetBoolProperty(group, "IsValid"),
       ["gradings"] = gradings,
     };
@@ -834,209 +764,10 @@ public static class GradingCommands
 
   private static List<Point3d> GetFeatureLineVertices(DBObject featureLine)
   {
-    foreach (var candidate in EnumerateFeatureLinePointCandidates(featureLine))
-    {
-      var candidatePoints = new List<Point3d>();
-      if (TryAddPointCandidates(candidate, candidatePoints) && candidatePoints.Count >= 2)
-      {
-        return DeduplicateSequentialPoints(candidatePoints);
-      }
-    }
-
-    var count = GetFeatureLineVertexCount(featureLine);
-    if (count > 0)
-    {
-      foreach (var methodName in new[] { "GetPointAtIndex", "GetPointAt" })
-      {
-        var method = featureLine.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
-          .FirstOrDefault(m =>
-            m.Name == methodName
-            && m.GetParameters().Length == 1
-            && m.GetParameters()[0].ParameterType == typeof(int));
-
-        if (method == null)
-        {
-          continue;
-        }
-
-        var indexedPoints = new List<Point3d>();
-        for (var index = 0; index < count; index++)
-        {
-          try
-          {
-            var value = method.Invoke(featureLine, new object[] { index });
-            if (!TryConvertToPoint3d(value, out var point))
-            {
-              indexedPoints.Clear();
-              break;
-            }
-
-            indexedPoints.Add(point);
-          }
-          catch
-          {
-            indexedPoints.Clear();
-            break;
-          }
-        }
-
-        if (indexedPoints.Count >= 2)
-        {
-          return DeduplicateSequentialPoints(indexedPoints);
-        }
-      }
-    }
-
-    return new List<Point3d>();
-  }
-
-  private static IEnumerable<object?> EnumerateFeatureLinePointCandidates(DBObject featureLine)
-  {
-    foreach (var propertyName in new[] { "Points", "Vertices", "PIPoints", "ElevationPoints" })
-    {
-      var propertyValue = CivilObjectUtils.GetPropertyValue<object>(featureLine, propertyName);
-      if (propertyValue != null)
-      {
-        yield return propertyValue;
-      }
-    }
-
-    foreach (var method in featureLine.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
-      .Where(m => m.Name == "GetPoints"))
-    {
-      var parameters = method.GetParameters();
-      if (parameters.Length == 0)
-      {
-        object? result = null;
-        try { result = method.Invoke(featureLine, Array.Empty<object>()); } catch { }
-        if (result != null)
-        {
-          yield return result;
-        }
-        continue;
-      }
-
-      if (parameters.Length == 1 && parameters[0].ParameterType.IsEnum)
-      {
-        foreach (var enumValue in SelectPreferredEnumValues(parameters[0].ParameterType))
-        {
-          object? result = null;
-          try { result = method.Invoke(featureLine, new[] { enumValue }); } catch { }
-          if (result != null)
-          {
-            yield return result;
-          }
-        }
-      }
-    }
-  }
-
-  private static IEnumerable<object> SelectPreferredEnumValues(Type enumType)
-  {
-    var values = Enum.GetValues(enumType).Cast<object>().ToList();
-    var preferredNames = new[]
-    {
-      "AllPoints",
-      "All",
-      "AllPointsIncludingElevationPoints",
-      "PIPointsAndElevationPoints",
-      "PIAndElevationPoints",
-      "ElevationPoints",
-      "PIPoints",
-    };
-
-    foreach (var preferredName in preferredNames)
-    {
-      var match = values.FirstOrDefault(value => string.Equals(value.ToString(), preferredName, StringComparison.OrdinalIgnoreCase));
-      if (match != null)
-      {
-        yield return match;
-      }
-    }
-
-    foreach (var value in values)
-    {
-      yield return value;
-    }
-  }
-
-  private static int GetFeatureLineVertexCount(DBObject featureLine)
-  {
-    foreach (var propertyName in new[] { "PointsCount", "PointCount", "VertexCount", "PIPointsCount", "PIPointCount" })
-    {
-      var value = CivilObjectUtils.GetPropertyValue<object>(featureLine, propertyName);
-      if (value == null)
-      {
-        continue;
-      }
-
-      try
-      {
-        var converted = Convert.ToInt32(value);
-        if (converted > 0)
-        {
-          return converted;
-        }
-      }
-      catch { }
-    }
-
-    return 0;
-  }
-
-  private static bool TryAddPointCandidates(object? value, List<Point3d> target)
-  {
-    if (value is null)
-    {
-      return false;
-    }
-
-    if (TryConvertToPoint3d(value, out var directPoint))
-    {
-      target.Add(directPoint);
-      return true;
-    }
-
-    if (value is not IEnumerable enumerable)
-    {
-      return false;
-    }
-
-    var added = false;
-    foreach (var item in enumerable)
-    {
-      if (!TryConvertToPoint3d(item, out var point))
-      {
-        continue;
-      }
-
-      target.Add(point);
-      added = true;
-    }
-
-    return added;
-  }
-
-  private static bool TryConvertToPoint3d(object? value, out Point3d point)
-  {
-    if (value is Point3d point3d)
-    {
-      point = point3d;
-      return true;
-    }
-
-    var x = CivilObjectUtils.GetDoubleProperty(value, "X") ?? CivilObjectUtils.GetDoubleProperty(value, "Easting");
-    var y = CivilObjectUtils.GetDoubleProperty(value, "Y") ?? CivilObjectUtils.GetDoubleProperty(value, "Northing");
-    var z = CivilObjectUtils.GetDoubleProperty(value, "Z") ?? CivilObjectUtils.GetDoubleProperty(value, "Elevation") ?? 0d;
-
-    if (x.HasValue && y.HasValue)
-    {
-      point = new Point3d(x.Value, y.Value, z);
-      return true;
-    }
-
-    point = Point3d.Origin;
-    return false;
+    if (featureLine is not Autodesk.Civil.DatabaseServices.FeatureLine typedFeatureLine)
+      return new List<Point3d>();
+    return DeduplicateSequentialPoints(
+      typedFeatureLine.GetPoints(Autodesk.Civil.FeatureLinePointType.AllPoints).Cast<Point3d>());
   }
 
   private static List<Point3d> DeduplicateSequentialPoints(IEnumerable<Point3d> points)
@@ -1063,13 +794,4 @@ public static class GradingCommands
     };
   }
 
-  private static Type? FindType(string fullName)
-  {
-    foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-    {
-      var t = assembly.GetType(fullName);
-      if (t != null) return t;
-    }
-    return null;
-  }
 }

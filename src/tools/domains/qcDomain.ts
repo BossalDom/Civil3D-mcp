@@ -30,6 +30,7 @@ const canonicalQcInputShape = {
   spikeThreshold: z.number().optional(),
   flatTriangleThreshold: z.number().optional(),
   outputPath: z.string().optional(),
+  overwrite: z.boolean().optional(),
   includeAlignments: z.boolean().optional(),
   includeProfiles: z.boolean().optional(),
   includeCorridors: z.boolean().optional(),
@@ -80,6 +81,7 @@ const QcSurfaceArgsSchema = z.object({
 const QcReportArgsSchema = z.object({
   action: z.literal("generate_report"),
   outputPath: z.string(),
+  overwrite: z.boolean().optional(),
   includeAlignments: z.boolean().optional(),
   includeProfiles: z.boolean().optional(),
   includeCorridors: z.boolean().optional(),
@@ -184,6 +186,7 @@ export const QC_DOMAIN_DEFINITION: DomainToolDefinition = {
       execute: async (args) => await withApplicationConnection(
         async (appClient) => await appClient.sendCommand("qcReportGenerate", {
           outputPath: args.outputPath,
+          overwrite: args.overwrite ?? false,
           includeAlignments: args.includeAlignments ?? true,
           includeProfiles: args.includeProfiles ?? true,
           includeCorridors: args.includeCorridors ?? true,
@@ -319,6 +322,7 @@ export const QC_DOMAIN_DEFINITION: DomainToolDefinition = {
       description: "Runs a full QC pass over the active drawing and writes a consolidated report to disk.",
       inputShape: {
         outputPath: z.string(),
+        overwrite: z.boolean().optional(),
         includeAlignments: z.boolean().optional(),
         includeProfiles: z.boolean().optional(),
         includeCorridors: z.boolean().optional(),
@@ -332,6 +336,7 @@ export const QC_DOMAIN_DEFINITION: DomainToolDefinition = {
         args: {
           action: "generate_report",
           outputPath: rawArgs.outputPath,
+          overwrite: rawArgs.overwrite,
           includeAlignments: rawArgs.includeAlignments,
           includeProfiles: rawArgs.includeProfiles,
           includeCorridors: rawArgs.includeCorridors,

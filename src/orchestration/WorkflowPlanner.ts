@@ -713,20 +713,16 @@ export function buildWorkflowPlan(routed: RouteResult, params: RouteParams, proj
     };
   }
 
-  if (routed.match.intent === "calculate_slope_geometry" || routed.match.intent === "check_slope_stability") {
+  if (routed.match.intent === "calculate_slope_geometry") {
     const clarificationQuestions: string[] = [];
     if (!params.alignmentName) {
-      clarificationQuestions.push(routed.match.intent === "calculate_slope_geometry"
-        ? "Which alignment should be used for the slope geometry calculation?"
-        : "Which alignment should be checked for slope stability?");
+      clarificationQuestions.push("Which alignment should be used for the slope geometry calculation?");
     }
 
     return {
       kind: "workflow",
-      title: routed.match.intent === "calculate_slope_geometry" ? "Slope geometry workflow" : "Slope stability workflow",
-      summary: routed.match.intent === "calculate_slope_geometry"
-        ? "Plans the alignment selection needed before calculating slope daylight geometry."
-        : "Plans the alignment selection needed before checking slope stability.",
+      title: "Slope geometry workflow",
+      summary: "Plans the alignment selection needed before calculating slope daylight geometry.",
       steps: [
         {
           title: "Review available alignments",
@@ -737,7 +733,7 @@ export function buildWorkflowPlan(routed: RouteResult, params: RouteParams, proj
           notes: hasAlignments ? "Alignment objects are present in the drawing." : "No alignments detected in drawing info.",
         },
         {
-          title: routed.match.intent === "calculate_slope_geometry" ? "Calculate slope geometry" : "Check slope stability",
+          title: "Calculate slope geometry",
           toolName: routed.match.toolName,
           action: routed.match.action,
           requiredFields: ["alignmentName"],

@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.Geometry;
 
@@ -235,9 +234,8 @@ public static class CogoCommands
         return new Dictionary<string, object?> { ["databases"] = new List<object>(), ["note"] = "Survey not initialized in this drawing." };
       }
 
-      var dbsProp = surveyDoc.GetType().GetProperty("Databases", BindingFlags.Public | BindingFlags.Instance)
-        ?? surveyDoc.GetType().GetProperty("SurveyDatabases", BindingFlags.Public | BindingFlags.Instance);
-      var dbs = dbsProp?.GetValue(surveyDoc);
+      var dbs = Civil3DCompatibility.GetPropertyValue(surveyDoc, "Databases")
+        ?? Civil3DCompatibility.GetPropertyValue(surveyDoc, "SurveyDatabases");
 
       var result = new List<Dictionary<string, object?>>();
       foreach (var item in AsEnumerable(dbs))
@@ -259,44 +257,10 @@ public static class CogoCommands
 
   public static Task<object?> CreateSurveyDatabaseAsync(JsonObject? parameters)
   {
-    var name = PluginRuntime.GetRequiredString(parameters, "name");
-    var path = PluginRuntime.GetOptionalString(parameters, "path");
-
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var surveyDoc = GetSurveyDocument(civilDoc);
-      if (surveyDoc == null)
-      {
-        throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "Survey API not available in this drawing.");
-      }
-
-      var dbsProp = surveyDoc.GetType().GetProperty("Databases", BindingFlags.Public | BindingFlags.Instance)
-        ?? surveyDoc.GetType().GetProperty("SurveyDatabases", BindingFlags.Public | BindingFlags.Instance);
-      var dbs = dbsProp?.GetValue(surveyDoc);
-
-      var addMethod = dbs?.GetType().GetMethods()
-        .FirstOrDefault(m => m.Name == "Add" || m.Name == "Create");
-
-      if (addMethod == null)
-      {
-        throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "SurveyDatabases.Add/Create method not found.");
-      }
-
-      var args = addMethod.GetParameters().Length switch
-      {
-        2 when path != null => new object[] { name, path },
-        _ => new object[] { name },
-      };
-
-      addMethod.Invoke(dbs, args);
-
-      return new Dictionary<string, object?>
-      {
-        ["name"] = name,
-        ["path"] = path,
-        ["created"] = true,
-      };
-    });
+    _ = PluginRuntime.GetRequiredString(parameters, "name");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 does not document a managed SurveyDatabase create API. No survey database was created; use the Survey toolspace workflow.");
   }
 
   // -------------------------------------------------------------------------
@@ -325,9 +289,8 @@ public static class CogoCommands
           continue;
         }
 
-        var figuresProp = db.GetType().GetProperty("Figures", BindingFlags.Public | BindingFlags.Instance)
-          ?? db.GetType().GetProperty("SurveyFigures", BindingFlags.Public | BindingFlags.Instance);
-        var figs = figuresProp?.GetValue(db);
+        var figs = Civil3DCompatibility.GetPropertyValue(db, "Figures")
+          ?? Civil3DCompatibility.GetPropertyValue(db, "SurveyFigures");
 
         foreach (var fig in AsEnumerable(figs))
         {
@@ -372,9 +335,8 @@ public static class CogoCommands
           continue;
         }
 
-        var figuresProp = db.GetType().GetProperty("Figures", BindingFlags.Public | BindingFlags.Instance)
-          ?? db.GetType().GetProperty("SurveyFigures", BindingFlags.Public | BindingFlags.Instance);
-        var figs = figuresProp?.GetValue(db);
+        var figs = Civil3DCompatibility.GetPropertyValue(db, "Figures")
+          ?? Civil3DCompatibility.GetPropertyValue(db, "SurveyFigures");
 
         foreach (var fig in AsEnumerable(figs))
         {
@@ -384,15 +346,16 @@ public static class CogoCommands
           }
 
           // Extract vertices
-          var vertices = new List<Dictionary<string, double>>();
-          var verticesMethod = fig.GetType().GetMethod("GetVertices", BindingFlags.Public | BindingFlags.Instance);
-          var vertexCollection = verticesMethod?.Invoke(fig, Array.Empty<object>());
+          var vertices = new List<Dictionary<string, object?>>();
+          var vertexCollection = Civil3DCompatibility.InvokeMethod(fig, "GetVertices");
           foreach (var vtx in AsEnumerable(vertexCollection))
           {
-            var px = CivilObjectUtils.GetDoubleProperty(vtx, "X") ?? CivilObjectUtils.GetDoubleProperty(vtx, "Easting") ?? 0;
-            var py = CivilObjectUtils.GetDoubleProperty(vtx, "Y") ?? CivilObjectUtils.GetDoubleProperty(vtx, "Northing") ?? 0;
-            var pz = CivilObjectUtils.GetDoubleProperty(vtx, "Z") ?? CivilObjectUtils.GetDoubleProperty(vtx, "Elevation") ?? 0;
-            vertices.Add(new Dictionary<string, double> { ["x"] = px, ["y"] = py, ["z"] = pz });
+            var px = CivilObjectUtils.GetDoubleProperty(vtx, "X") ?? CivilObjectUtils.GetDoubleProperty(vtx, "Easting");
+            var py = CivilObjectUtils.GetDoubleProperty(vtx, "Y") ?? CivilObjectUtils.GetDoubleProperty(vtx, "Northing");
+            var pz = CivilObjectUtils.GetDoubleProperty(vtx, "Z") ?? CivilObjectUtils.GetDoubleProperty(vtx, "Elevation");
+            if (!px.HasValue || !py.HasValue)
+              throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", $"Survey figure '{name}' contains a vertex without readable X/Y coordinates. Zero coordinates were not substituted.");
+            vertices.Add(new Dictionary<string, object?> { ["x"] = px.Value, ["y"] = py.Value, ["z"] = pz });
           }
 
           return new Dictionary<string, object?>
@@ -409,6 +372,138 @@ public static class CogoCommands
 
       throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Survey figure '{name}' not found.");
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // listSurveyObservations
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> ListSurveyObservationsAsync(JsonObject? parameters)
+  {
+    var databaseName = PluginRuntime.GetRequiredString(parameters, "databaseName");
+    var networkName = PluginRuntime.GetOptionalString(parameters, "networkName");
+    var observationType = PluginRuntime.GetOptionalString(parameters, "observationType");
+
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var surveyDoc = GetSurveyDocument(civilDoc);
+      if (surveyDoc == null)
+      {
+        return new Dictionary<string, object?>
+        {
+          ["observations"] = new List<object>(),
+          ["note"] = "Survey not initialized in this drawing.",
+        };
+      }
+
+      var db = FindSurveyDatabase(surveyDoc, databaseName);
+      if (db == null)
+      {
+        throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Survey database '{databaseName}' not found.");
+      }
+
+      var networkItems = GetSurveyNetworks(db)
+        .Where(network => networkName == null || string.Equals(CivilObjectUtils.GetName(network) ?? CivilObjectUtils.GetStringProperty(network, "Name"), networkName, StringComparison.OrdinalIgnoreCase))
+        .ToList();
+      if (networkName != null && networkItems.Count == 0)
+      {
+        throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Survey network '{networkName}' not found in '{databaseName}'.");
+      }
+
+      var observations = new List<Dictionary<string, object?>>();
+      foreach (var network in networkItems)
+      {
+        var netName = CivilObjectUtils.GetName(network) ?? CivilObjectUtils.GetStringProperty(network, "Name");
+        var observationCollection = GetSurveyObjectMember(network, "Observations");
+
+        foreach (var obs in AsEnumerable(observationCollection))
+        {
+          var typeValue = CivilObjectUtils.GetStringProperty(obs, "ObservationType")
+            ?? CivilObjectUtils.GetStringProperty(obs, "Type")
+            ?? string.Empty;
+
+          if (!string.IsNullOrWhiteSpace(observationType) &&
+              !string.Equals(observationType, "all", StringComparison.OrdinalIgnoreCase) &&
+              !string.Equals(typeValue, observationType, StringComparison.OrdinalIgnoreCase) &&
+              !string.Equals(typeValue, observationType.Replace("_", ""), StringComparison.OrdinalIgnoreCase))
+          {
+            continue;
+          }
+
+          var from = CivilObjectUtils.GetStringProperty(obs, "FromPoint") ?? CivilObjectUtils.GetStringProperty(obs, "From") ?? string.Empty;
+          var to = CivilObjectUtils.GetStringProperty(obs, "ToPoint") ?? CivilObjectUtils.GetStringProperty(obs, "To") ?? string.Empty;
+          var value = CivilObjectUtils.GetDoubleProperty(obs, "Value") ?? CivilObjectUtils.GetDoubleProperty(obs, "Distance");
+          var sigma = CivilObjectUtils.GetDoubleProperty(obs, "StandardDeviation") ?? CivilObjectUtils.GetDoubleProperty(obs, "StdDev");
+
+          observations.Add(new Dictionary<string, object?>
+          {
+            ["databaseName"] = databaseName,
+            ["networkName"] = netName,
+            ["type"] = typeValue,
+            ["fromPoint"] = from,
+            ["toPoint"] = to,
+            ["value"] = value,
+            ["sigma"] = sigma,
+            ["isValid"] = CivilObjectUtils.GetBoolProperty(obs, "IsValid"),
+          });
+        }
+      }
+
+      return new Dictionary<string, object?>
+      {
+        ["databaseName"] = databaseName,
+        ["networkName"] = networkName ?? string.Empty,
+        ["observationCount"] = observations.Count,
+        ["observations"] = observations,
+      };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // adjustSurveyNetwork
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> AdjustSurveyNetworkAsync(JsonObject? parameters)
+  {
+    _ = PluginRuntime.GetRequiredString(parameters, "databaseName");
+    _ = PluginRuntime.GetRequiredString(parameters, "networkName");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 does not document a managed survey-network adjustment API. No least-squares method, confidence level, or apply behavior was assumed; use the Survey Network Adjustment workflow.");
+  }
+
+  // -------------------------------------------------------------------------
+  // createSurveyFigure
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> CreateSurveyFigureAsync(JsonObject? parameters)
+  {
+    var databaseName = PluginRuntime.GetRequiredString(parameters, "databaseName");
+    var figureName = PluginRuntime.GetRequiredString(parameters, "figureName");
+    var pointNumbers = PluginRuntime.GetParameter(parameters, "pointNumbers") as JsonArray;
+    if (pointNumbers == null || pointNumbers.Count == 0)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "pointNumbers is required.");
+    }
+
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      $"Civil 3D 2026 does not document a managed survey-figure creation API. Figure '{figureName}' was not created from database '{databaseName}'.");
+  }
+
+  // -------------------------------------------------------------------------
+  // importSurveyLandXml
+  // -------------------------------------------------------------------------
+
+  public static Task<object?> ImportSurveyLandXmlAsync(JsonObject? parameters)
+  {
+    var filePath = FileBoundary.ResolveImportPath(
+      PluginRuntime.GetRequiredString(parameters, "filePath"),
+      ".xml", ".landxml");
+    var databaseName = PluginRuntime.GetRequiredString(parameters, "databaseName");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      $"Civil 3D 2026 does not document a managed survey-database LandXML import API. '{filePath}' was not imported into '{databaseName}'.");
   }
 
   // -------------------------------------------------------------------------
@@ -484,16 +579,62 @@ public static class CogoCommands
 
   private static object? GetSurveyDocument(Autodesk.Civil.ApplicationServices.CivilDocument civilDoc)
   {
-    // Try SurveyDocument property
-    var surveyProp = civilDoc.GetType().GetProperty("SurveyDocument", BindingFlags.Public | BindingFlags.Instance);
-    return surveyProp?.GetValue(civilDoc);
+    return Civil3DCompatibility.GetPropertyValue(civilDoc, "SurveyDocument");
   }
 
   private static IEnumerable<object> GetSurveyDatabases(object surveyDoc)
   {
-    var dbsProp = surveyDoc.GetType().GetProperty("Databases", BindingFlags.Public | BindingFlags.Instance)
-      ?? surveyDoc.GetType().GetProperty("SurveyDatabases", BindingFlags.Public | BindingFlags.Instance);
-    return AsEnumerable(dbsProp?.GetValue(surveyDoc));
+    return AsEnumerable(
+      Civil3DCompatibility.GetPropertyValue(surveyDoc, "Databases")
+      ?? Civil3DCompatibility.GetPropertyValue(surveyDoc, "SurveyDatabases"));
+  }
+
+  private static object? FindSurveyDatabase(object surveyDoc, string databaseName)
+  {
+    foreach (var item in GetSurveyDatabases(surveyDoc))
+    {
+      var itemName = CivilObjectUtils.GetName(item)
+        ?? CivilObjectUtils.GetStringProperty(item, "DatabaseName");
+      if (string.Equals(itemName, databaseName, StringComparison.OrdinalIgnoreCase))
+      {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  private static IEnumerable<object> GetSurveyNetworks(object surveyDatabase)
+  {
+    var networks = GetSurveyObjectMember(surveyDatabase, "Networks")
+      ?? GetSurveyObjectMember(surveyDatabase, "SurveyNetworks")
+      ?? GetSurveyObjectMember(surveyDatabase, "NetworkCollection");
+    return AsEnumerable(networks);
+  }
+
+  private static object? FindSurveyNetwork(object surveyDatabase, string networkName)
+  {
+    foreach (var network in GetSurveyNetworks(surveyDatabase))
+    {
+      var netName = CivilObjectUtils.GetName(network) ?? CivilObjectUtils.GetStringProperty(network, "Name");
+      if (string.Equals(netName, networkName, StringComparison.OrdinalIgnoreCase))
+      {
+        return network;
+      }
+    }
+    return null;
+  }
+
+  private static IEnumerable<object> GetSurveyObjectMemberValues(object target, string memberName)
+  {
+    var value = GetSurveyObjectMember(target, memberName);
+    return AsEnumerable(value);
+  }
+
+  private static object? GetSurveyObjectMember(object target, string memberName)
+  {
+    if (target == null) return null;
+    return Civil3DCompatibility.GetPropertyValue(target, memberName)
+      ?? Civil3DCompatibility.InvokeMethod(target, memberName);
   }
 
   private static IEnumerable<object> AsEnumerable(object? collection)

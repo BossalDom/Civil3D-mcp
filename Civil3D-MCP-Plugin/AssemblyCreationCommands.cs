@@ -1,158 +1,194 @@
-using System.Collections;
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.Civil.ApplicationServices;
+using Autodesk.Civil.DatabaseServices;
+using AcDbObject = Autodesk.AutoCAD.DatabaseServices.DBObject;
 
 namespace Civil3DMcpPlugin;
 
 /// <summary>
-/// Assembly and subassembly creation/editing commands.
-/// Uses reflection for Civil 3D API compatibility.
+/// Assembly operations implemented with the documented Civil 3D 2026 API.
+/// Dynamic stock-subassembly parameters are the only compatibility access.
 /// </summary>
 public static class AssemblyCreationCommands
 {
-  // ─── createAssembly ─────────────────────────────────────────────────────────
+  public static Task<object?> ListAssembliesAsync()
+  {
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var assemblies = civilDoc.AssemblyCollection
+        .Select(id => CivilObjectUtils.GetRequiredObject<Assembly>(transaction, id, OpenMode.ForRead))
+        .Select(assembly =>
+        {
+          var summary = ToAssemblySummary(assembly);
+          summary["usedByCorridors"] = new List<string>();
+          return summary;
+        })
+        .ToList();
+
+      return new Dictionary<string, object?> { ["assemblies"] = assemblies };
+    });
+  }
+
+  public static Task<object?> GetAssemblyAsync(JsonObject? parameters)
+  {
+    var name = PluginRuntime.GetRequiredString(parameters, "name");
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var assembly = FindAssemblyByName(civilDoc, transaction, name, OpenMode.ForRead);
+      var usedByCorridors = new List<string>();
+
+      foreach (ObjectId corridorId in civilDoc.CorridorCollection)
+      {
+        var corridor = CivilObjectUtils.GetRequiredObject<Corridor>(transaction, corridorId, OpenMode.ForRead);
+        foreach (Baseline baseline in corridor.Baselines)
+        {
+          foreach (BaselineRegion region in baseline.BaselineRegions)
+          {
+            if (region.AssemblyId == assembly.ObjectId && !usedByCorridors.Contains(corridor.Name))
+              usedByCorridors.Add(corridor.Name);
+          }
+        }
+      }
+
+      return new Dictionary<string, object?>
+      {
+        ["name"] = assembly.Name,
+        ["handle"] = CivilObjectUtils.GetHandle(assembly),
+        ["subassemblyCount"] = GetSubassemblyIds(assembly).Count,
+        ["style"] = GetStyleName(assembly, transaction),
+        ["type"] = assembly.Type.ToString(),
+        ["subassemblies"] = GetSubassemblies(assembly, transaction),
+        ["usedByCorridors"] = usedByCorridors,
+      };
+    });
+  }
 
   public static Task<object?> CreateAssemblyAsync(JsonObject? parameters)
   {
     var name = PluginRuntime.GetRequiredString(parameters, "name");
-    var insertX = PluginRuntime.GetOptionalDouble(parameters, "insertX") ?? 0.0;
-    var insertY = PluginRuntime.GetOptionalDouble(parameters, "insertY") ?? 0.0;
+    var insertX = PluginRuntime.GetRequiredDouble(parameters, "insertX");
+    var insertY = PluginRuntime.GetRequiredDouble(parameters, "insertY");
     var description = PluginRuntime.GetOptionalString(parameters, "description") ?? string.Empty;
+    var assemblyTypeText = PluginRuntime.GetRequiredString(parameters, "assemblyType");
+    if (!Enum.TryParse<AssemblyType>(assemblyTypeText, ignoreCase: true, out var assemblyType))
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.INVALID_INPUT",
+        $"Invalid assemblyType '{assemblyTypeText}'. Use {string.Join(", ", Enum.GetNames<AssemblyType>())}.");
+    }
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      var insertPoint = new Point3d(insertX, insertY, 0);
-      var assemblyId = CreateAssembly(civilDoc, database, transaction, name, insertPoint, description);
-
-      if (assemblyId == ObjectId.Null)
-      {
-        throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"Failed to create assembly '{name}'.");
-      }
-
-      var assembly = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, assemblyId, OpenMode.ForRead);
+      var assemblyId = civilDoc.AssemblyCollection.Add(name, assemblyType, new Point3d(insertX, insertY, 0));
+      var assembly = CivilObjectUtils.GetRequiredObject<Assembly>(transaction, assemblyId, OpenMode.ForWrite);
+      assembly.Description = description;
 
       return new Dictionary<string, object?>
       {
-        ["name"] = CivilObjectUtils.GetName(assembly) ?? name,
+        ["name"] = assembly.Name,
         ["handle"] = CivilObjectUtils.GetHandle(assembly),
         ["insertX"] = insertX,
         ["insertY"] = insertY,
+        ["assemblyType"] = assembly.Type.ToString(),
         ["created"] = true,
       };
     });
   }
 
-  // ─── createSubassembly ──────────────────────────────────────────────────────
-
   public static Task<object?> CreateSubassemblyAsync(JsonObject? parameters)
   {
     var assemblyName = PluginRuntime.GetRequiredString(parameters, "assemblyName");
     var subassemblyType = PluginRuntime.GetRequiredString(parameters, "subassemblyType");
-    var side = PluginRuntime.GetOptionalString(parameters, "side") ?? "Right";
+    var side = PluginRuntime.GetRequiredString(parameters, "side");
+    if (!new[] { "Left", "Right", "Both" }.Contains(side, StringComparer.OrdinalIgnoreCase))
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "side must be Left, Right, or Both.");
 
-    // Collect all parameters as a dictionary for property injection
-    var subParams = parameters?["parameters"] as JsonObject;
-    var paramDict = new Dictionary<string, object?>();
-    if (subParams != null)
-    {
-      foreach (var kv in subParams)
-      {
-        paramDict[kv.Key] = kv.Value?.GetValue<object>();
-      }
-    }
-
+    var subParams = ReadParameters(parameters?["parameters"] as JsonObject);
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var assembly = FindAssemblyByName(civilDoc, transaction, assemblyName, OpenMode.ForWrite);
-      var subassemblyId = AddSubassembly(civilDoc, database, transaction, assembly, subassemblyType, side, paramDict);
+      var requestedSides = side.Equals("Both", StringComparison.OrdinalIgnoreCase)
+        ? new[] { "Left", "Right" }
+        : new[] { side };
+      var created = new List<Dictionary<string, object?>>();
 
-      if (subassemblyId == ObjectId.Null)
+      foreach (var requestedSide in requestedSides)
       {
-        throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"Failed to add subassembly '{subassemblyType}' to assembly '{assemblyName}'.");
-      }
+        var subassemblyName = $"{subassemblyType}-{requestedSide}-{Guid.NewGuid():N}";
+        var subassemblyId = civilDoc.SubassemblyCollection.ImportStockSubassembly(
+          subassemblyName,
+          subassemblyType,
+          assembly.Location);
+        assembly.AddSubassembly(subassemblyId);
 
-      var sub = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, subassemblyId, OpenMode.ForRead);
+        var subassembly = CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, subassemblyId, OpenMode.ForWrite);
+        if (!Civil3DCompatibility.TrySetProperty(subassembly, "Side", requestedSide))
+        {
+          throw new JsonRpcDispatchException(
+            "CIVIL3D.API_ERROR",
+            $"Stock subassembly '{subassemblyType}' does not expose a writable Side parameter. No implicit side was assumed.");
+        }
+        ApplySubassemblyParameters(subassembly, subParams);
+
+        created.Add(new Dictionary<string, object?>
+        {
+          ["name"] = CivilObjectUtils.GetName(subassembly) ?? subassemblyName,
+          ["handle"] = CivilObjectUtils.GetHandle(subassembly),
+          ["side"] = requestedSide,
+        });
+      }
 
       return new Dictionary<string, object?>
       {
         ["assemblyName"] = assemblyName,
-        ["subassemblyName"] = CivilObjectUtils.GetName(sub) ?? subassemblyType,
         ["subassemblyType"] = subassemblyType,
-        ["side"] = side,
-        ["handle"] = CivilObjectUtils.GetHandle(sub),
+        ["subassemblies"] = created,
         ["added"] = true,
       };
     });
   }
-
-  // ─── editAssembly ───────────────────────────────────────────────────────────
 
   public static Task<object?> EditAssemblyAsync(JsonObject? parameters)
   {
     var assemblyName = PluginRuntime.GetRequiredString(parameters, "assemblyName");
     var subassemblyName = PluginRuntime.GetOptionalString(parameters, "subassemblyName");
     var deleteSubassembly = PluginRuntime.GetOptionalBool(parameters, "delete") ?? false;
-
-    var editParams = parameters?["parameters"] as JsonObject;
-    var paramDict = new Dictionary<string, object?>();
-    if (editParams != null)
-    {
-      foreach (var kv in editParams)
-      {
-        paramDict[kv.Key] = kv.Value?.GetValue<object>();
-      }
-    }
+    var editParameters = ReadParameters(parameters?["parameters"] as JsonObject);
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      var openMode = (deleteSubassembly || paramDict.Count > 0) ? OpenMode.ForWrite : OpenMode.ForRead;
+      var openMode = deleteSubassembly || editParameters.Count > 0 ? OpenMode.ForWrite : OpenMode.ForRead;
       var assembly = FindAssemblyByName(civilDoc, transaction, assemblyName, openMode);
-      var subassemblyIds = GetSubassemblyIds(assembly).ToList();
+      var subassemblyIds = GetSubassemblyIds(assembly);
 
-      // List mode — no subassembly name provided
       if (string.IsNullOrWhiteSpace(subassemblyName))
       {
-        var subs = subassemblyIds.Select(id =>
-        {
-          var sub = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead);
-          return new Dictionary<string, object?>
-          {
-            ["name"] = CivilObjectUtils.GetName(sub) ?? id.Handle.ToString(),
-            ["handle"] = CivilObjectUtils.GetHandle(sub),
-            ["type"] = sub.GetType().Name,
-          };
-        }).ToList();
-
+        var subassemblies = subassemblyIds
+          .Select(id => CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, id, OpenMode.ForRead))
+          .Select(ToSubassemblySummary)
+          .ToList();
         return new Dictionary<string, object?>
         {
           ["assemblyName"] = assemblyName,
-          ["subassemblyCount"] = subs.Count,
-          ["subassemblies"] = subs,
+          ["subassemblyCount"] = subassemblies.Count,
+          ["subassemblies"] = subassemblies,
         };
       }
 
-      // Find the target subassembly
-      DBObject? targetSub = null;
-      foreach (var id in subassemblyIds)
+      var targetId = subassemblyIds.FirstOrDefault(id =>
       {
-        var sub = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, openMode);
-        if (string.Equals(CivilObjectUtils.GetName(sub), subassemblyName, StringComparison.OrdinalIgnoreCase))
-        {
-          targetSub = sub;
-          break;
-        }
-      }
-
-      if (targetSub == null)
-      {
+        var candidate = CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, id, OpenMode.ForRead);
+        return string.Equals(CivilObjectUtils.GetName(candidate), subassemblyName, StringComparison.OrdinalIgnoreCase);
+      });
+      if (targetId.IsNull)
         throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Subassembly '{subassemblyName}' not found in assembly '{assemblyName}'.");
-      }
 
+      var target = CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, targetId, OpenMode.ForWrite);
       if (deleteSubassembly)
       {
-        targetSub.Erase();
+        target.Erase();
         return new Dictionary<string, object?>
         {
           ["assemblyName"] = assemblyName,
@@ -161,246 +197,104 @@ public static class AssemblyCreationCommands
         };
       }
 
-      // Apply parameter updates via reflection
-      var updatedParams = new List<string>();
-      foreach (var kv in paramDict)
+      var updated = ApplySubassemblyParameters(target, editParameters);
+      if (editParameters.Count > 0 && updated.Count != editParameters.Count)
       {
-        var prop = targetSub.GetType().GetProperty(kv.Key,
-          BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-        if (prop != null && prop.CanWrite && kv.Value != null)
-        {
-          try
-          {
-            var converted = Convert.ChangeType(kv.Value, prop.PropertyType);
-            prop.SetValue(targetSub, converted);
-            updatedParams.Add(kv.Key);
-          }
-          catch { /* skip params we can't set */ }
-        }
+        var missing = editParameters.Keys.Except(updated, StringComparer.OrdinalIgnoreCase);
+        throw new JsonRpcDispatchException(
+          "CIVIL3D.INVALID_INPUT",
+          $"Subassembly parameters were not writable: {string.Join(", ", missing)}. The transaction was not committed.");
       }
 
       return new Dictionary<string, object?>
       {
         ["assemblyName"] = assemblyName,
         ["subassemblyName"] = subassemblyName,
-        ["updatedParameters"] = updatedParams,
-        ["updated"] = updatedParams.Count > 0,
-        ["note"] = updatedParams.Count == 0 ? "No properties updated — rebuild corridor to apply any parameter changes." : "Parameters updated. Rebuild corridor to apply changes.",
+        ["updatedParameters"] = updated,
+        ["updated"] = updated.Count > 0,
       };
     });
   }
 
-  // ─── Private helpers ─────────────────────────────────────────────────────────
-
-  private static DBObject FindAssemblyByName(object civilDoc, Transaction transaction, string name, OpenMode openMode)
+  private static Dictionary<string, object?> ReadParameters(JsonObject? values)
   {
-    foreach (var assemblyTypeName in new[]
-    {
-      "Autodesk.Civil.DatabaseServices.Assembly",
-      "Autodesk.Civil.DatabaseServices.AssemblyAECC",
-    })
-    {
-      var type = Type.GetType($"{assemblyTypeName}, AeccDbMgd", false);
-      if (type == null) continue;
+    var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+    if (values == null) return result;
+    foreach (var pair in values)
+      result[pair.Key] = pair.Value?.GetValue<object>();
+    return result;
+  }
 
-      var collectionProp = civilDoc.GetType().GetProperty("AssemblyCollection",
-        BindingFlags.Public | BindingFlags.Instance);
-      var collection = collectionProp?.GetValue(civilDoc);
-      if (collection is IEnumerable enumerable)
-      {
-        foreach (var item in enumerable)
-        {
-          if (item is ObjectId id)
-          {
-            var obj = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, openMode);
-            if (string.Equals(CivilObjectUtils.GetName(obj), name, StringComparison.OrdinalIgnoreCase))
-              return obj;
-          }
-        }
-      }
+  private static Assembly FindAssemblyByName(
+    CivilDocument civilDocument,
+    Transaction transaction,
+    string name,
+    OpenMode openMode)
+  {
+    foreach (ObjectId id in civilDocument.AssemblyCollection)
+    {
+      var assembly = CivilObjectUtils.GetRequiredObject<Assembly>(transaction, id, openMode);
+      if (string.Equals(assembly.Name, name, StringComparison.OrdinalIgnoreCase))
+        return assembly;
     }
-
-    // Fallback: scan model space block for assembly objects
-    var db = transaction.GetObject(
-      Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument!.Database.CurrentSpaceId,
-      OpenMode.ForRead) as BlockTableRecord;
-
-    if (db != null)
-    {
-      foreach (ObjectId id in db)
-      {
-        try
-        {
-          var obj = transaction.GetObject(id, openMode, false, true);
-          if (obj?.GetType().Name.IndexOf("Assembly", StringComparison.OrdinalIgnoreCase) >= 0
-              && string.Equals(CivilObjectUtils.GetName(obj), name, StringComparison.OrdinalIgnoreCase))
-          {
-            return obj;
-          }
-        }
-        catch { /* skip */ }
-      }
-    }
-
     throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Assembly '{name}' was not found in the drawing.");
   }
 
-  private static ObjectId CreateAssembly(object civilDoc, Database database, Transaction transaction, string name, Point3d insertPoint, string description)
+  private static List<ObjectId> GetSubassemblyIds(Assembly assembly)
   {
-    foreach (var assemblyTypeName in new[]
-    {
-      "Autodesk.Civil.DatabaseServices.Assembly",
-      "Autodesk.Civil.DatabaseServices.AssemblyAECC",
-    })
-    {
-      var type = Type.GetType($"{assemblyTypeName}, AeccDbMgd", false);
-      if (type == null) continue;
-
-      var createMethods = type.GetMethods(BindingFlags.Public | BindingFlags.Static)
-        .Where(m => m.Name == "Create")
-        .OrderBy(m => m.GetParameters().Length)
-        .ToList();
-
-      foreach (var method in createMethods)
-      {
-        try
-        {
-          var mParams = method.GetParameters();
-          object?[] args;
-
-          if (mParams.Length == 2 && mParams[0].ParameterType == typeof(string))
-            args = [name, insertPoint];
-          else if (mParams.Length == 3)
-            args = [name, insertPoint, description];
-          else
-            continue;
-
-          var result = method.Invoke(null, args);
-          if (result is ObjectId id && id != ObjectId.Null)
-            return id;
-        }
-        catch { /* try next overload */ }
-      }
-    }
-
-    return ObjectId.Null;
+    return assembly.Groups
+      .SelectMany(group => group.GetSubassemblyIds().Cast<ObjectId>())
+      .Where(id => !id.IsNull)
+      .Distinct()
+      .ToList();
   }
 
-  private static ObjectId AddSubassembly(object civilDoc, Database database, Transaction transaction, DBObject assembly, string subassemblyType, string side, Dictionary<string, object?> parameters)
+  private static List<string> ApplySubassemblyParameters(AcDbObject subassembly, IReadOnlyDictionary<string, object?> parameters)
   {
-    // Try to find the subassembly catalog type and invoke its Create/Add method
-    foreach (var nsPrefix in new[] { "Autodesk.Civil.DatabaseServices.", "Autodesk.Civil.DatabaseServices.Styles." })
+    var updated = new List<string>();
+    foreach (var pair in parameters)
     {
-      var type = Type.GetType($"{nsPrefix}{subassemblyType}, AeccDbMgd", false)
-               ?? Type.GetType($"{nsPrefix}{subassemblyType}, AeccDbCoreMgd", false);
-
-      if (type == null) continue;
-
-      var createMethods = type.GetMethods(BindingFlags.Public | BindingFlags.Static)
-        .Where(m => m.Name == "Create" || m.Name == "Add")
-        .OrderBy(m => m.GetParameters().Length)
-        .ToList();
-
-      foreach (var method in createMethods)
-      {
-        try
-        {
-          var mParams = method.GetParameters();
-          object?[] args;
-
-          if (mParams.Length == 1)
-            args = [assembly.ObjectId];
-          else if (mParams.Length == 2)
-            args = [assembly.ObjectId, side];
-          else
-            continue;
-
-          var result = method.Invoke(null, args);
-          if (result is ObjectId id && id != ObjectId.Null)
-          {
-            ApplySubassemblyParameters(transaction, id, parameters);
-            return id;
-          }
-        }
-        catch { /* try next */ }
-      }
+      if (Civil3DCompatibility.TrySetProperty(subassembly, pair.Key, pair.Value))
+        updated.Add(pair.Key);
     }
-
-    // Fallback: try via assembly's AddSubassembly method
-    var addMethod = assembly.GetType().GetMethod("AddSubassembly",
-      BindingFlags.Public | BindingFlags.Instance);
-    if (addMethod != null)
-    {
-      try
-      {
-        var result = addMethod.Invoke(assembly, new object?[] { subassemblyType });
-        if (result is ObjectId id && id != ObjectId.Null)
-        {
-          ApplySubassemblyParameters(transaction, id, parameters);
-          return id;
-        }
-      }
-      catch { /* fall through */ }
-    }
-
-    return ObjectId.Null;
+    return updated;
   }
 
-  private static void ApplySubassemblyParameters(Transaction transaction, ObjectId subId, Dictionary<string, object?> parameters)
+  private static string? GetStyleName(Assembly assembly, Transaction transaction)
   {
-    if (parameters.Count == 0) return;
-    try
-    {
-      var sub = transaction.GetObject(subId, OpenMode.ForWrite, false, true);
-      foreach (var kv in parameters)
-      {
-        var prop = sub?.GetType().GetProperty(kv.Key,
-          BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-        if (prop != null && prop.CanWrite && kv.Value != null)
-        {
-          try
-          {
-            var converted = Convert.ChangeType(kv.Value, prop.PropertyType);
-            prop.SetValue(sub, converted);
-          }
-          catch { /* skip */ }
-        }
-      }
-    }
-    catch { /* skip */ }
+    if (assembly.StyleId.IsNull) return null;
+    return CivilObjectUtils.GetName(transaction.GetObject(assembly.StyleId, OpenMode.ForRead));
   }
 
-  private static IEnumerable<ObjectId> GetSubassemblyIds(DBObject assembly)
+  private static List<Dictionary<string, object?>> GetSubassemblies(Assembly assembly, Transaction transaction)
   {
-    foreach (var name in new[] { "GetSubassemblyIds", "SubassemblyIds", "Subassemblies", "SubassemblyCollection" })
-    {
-      var method = assembly.GetType().GetMethod(name, BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
-      if (method != null)
-      {
-        var result = method.Invoke(assembly, null);
-        if (result is IEnumerable enumerable)
-        {
-          foreach (var item in enumerable)
-          {
-            if (item is ObjectId id && id != ObjectId.Null) yield return id;
-          }
-          yield break;
-        }
-      }
+    return GetSubassemblyIds(assembly)
+      .Select(id => CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, id, OpenMode.ForRead))
+      .Select(ToSubassemblySummary)
+      .ToList();
+  }
 
-      var prop = assembly.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-      if (prop != null)
-      {
-        var val = prop.GetValue(assembly);
-        if (val is IEnumerable enumerable2)
-        {
-          foreach (var item in enumerable2)
-          {
-            if (item is ObjectId id && id != ObjectId.Null) yield return id;
-          }
-          yield break;
-        }
-      }
-    }
+  private static Dictionary<string, object?> ToSubassemblySummary(AcDbObject subassembly)
+  {
+    return new Dictionary<string, object?>
+    {
+      ["name"] = CivilObjectUtils.GetName(subassembly) ?? subassembly.Handle.ToString(),
+      ["handle"] = CivilObjectUtils.GetHandle(subassembly),
+      ["type"] = subassembly.GetType().Name,
+      ["className"] = subassembly.GetType().Name,
+      ["side"] = Civil3DCompatibility.GetPropertyValue(subassembly, "Side")?.ToString()?.ToLowerInvariant() ?? "none",
+      ["parameters"] = Civil3DCompatibility.GetReadableScalarProperties(subassembly),
+    };
+  }
+
+  private static Dictionary<string, object?> ToAssemblySummary(Assembly assembly)
+  {
+    return new Dictionary<string, object?>
+    {
+      ["name"] = assembly.Name,
+      ["handle"] = CivilObjectUtils.GetHandle(assembly),
+      ["subassemblyCount"] = GetSubassemblyIds(assembly).Count,
+      ["type"] = assembly.Type.ToString(),
+    };
   }
 }

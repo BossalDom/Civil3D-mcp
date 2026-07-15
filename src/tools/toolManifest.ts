@@ -1,5 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { buildDomainToolCatalogEntries, registerDomainTools } from "./domainRuntime.js";
+import {
+  buildDomainToolCatalogEntries,
+  captureDomainToolHandlers,
+  registerSelectedDomainTools,
+  type DomainActionDefinition,
+  type DomainToolDefinition,
+  type DomainToolExposure,
+} from "./domainRuntime.js";
 import { ALIGNMENT_DOMAIN_DEFINITION } from "./domains/alignmentDomain.js";
 import { SURFACE_DOMAIN_DEFINITION } from "./domains/surfaceDomain.js";
 import { PROFILE_DOMAIN_DEFINITION } from "./domains/profileDomain.js";
@@ -69,8 +76,55 @@ export const GENERATED_TOOL_CATALOG_ENTRIES: ToolCatalogEntry[] = MIGRATED_DOMAI
   (definition) => buildDomainToolCatalogEntries(definition),
 );
 
-export function registerManifestTools(server: McpServer) {
-  for (const definition of MIGRATED_DOMAIN_DEFINITIONS) {
-    registerDomainTools(server, definition);
+export interface ManifestActionMatch {
+  definition: DomainToolDefinition;
+  exposure: DomainToolExposure;
+  actionDefinition: DomainActionDefinition;
+}
+
+export function findManifestAction(toolName: string, action: string): ManifestActionMatch | undefined {
+  for (const definition of MIGRATED_DOMAIN_DEFINITIONS as DomainToolDefinition[]) {
+    const exposure = definition.exposures.find(
+      (candidate) => candidate.toolName === toolName && candidate.supportedActions.includes(action),
+    );
+    const actionDefinition = definition.actions[action];
+    if (exposure && actionDefinition) {
+      return { definition, exposure, actionDefinition };
+    }
   }
+  return undefined;
+}
+
+export function registerManifestTools(server: McpServer) {
+  const includeAliases = process.env.CIVIL3D_ENABLE_TOOL_ALIASES?.trim().toLowerCase() === "true";
+  for (const definition of MIGRATED_DOMAIN_DEFINITIONS) {
+    captureDomainToolHandlers(definition);
+    registerSelectedDomainTools(server, definition, selectManifestExposures(definition, includeAliases));
+  }
+}
+
+export function selectManifestExposures(
+  definition: DomainToolDefinition,
+  includeAliases = false,
+): DomainToolExposure[] {
+  if (includeAliases) {
+    return definition.exposures;
+  }
+
+  const canonical = definition.exposures[0];
+  if (!canonical) {
+    return [];
+  }
+
+  const selected = [canonical];
+  if (definition.domain === "docs") {
+    const orchestrator = definition.exposures.find(
+      (exposure) => exposure.toolName === "civil3d_orchestrate",
+    );
+    if (orchestrator && orchestrator !== canonical) {
+      selected.push(orchestrator);
+    }
+  }
+
+  return selected;
 }

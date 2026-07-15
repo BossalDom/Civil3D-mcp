@@ -1,6 +1,6 @@
-using System.Collections;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.Civil.ApplicationServices;
 using Autodesk.Civil.DatabaseServices;
 
 namespace Civil3DMcpPlugin;
@@ -77,16 +77,97 @@ public static class CorridorCommands
   public static Task<object?> RebuildCorridorAsync(JsonObject? parameters)
   {
     var name = PluginRuntime.GetRequiredString(parameters, "name");
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+
+    // Create the job up front so the caller gets a jobId immediately — they
+    // poll civil3d_job(status, jobId) until the background rebuild finishes.
+    var requestId = PluginRuntime.GetCurrentRequestId();
+    var job = JobRegistry.Create(
+      $"Rebuilding corridor {name}",
+      "corridor_rebuild",
+      requestId,
+      PluginRuntime.GetActiveDrawingIdentity());
+    job.CancellationSource = new CancellationTokenSource();
+    var cancellationToken = job.CancellationSource.Token;
+
+    // Dispatch the rebuild to the Civil 3D command thread via
+    // CivilExecution.WriteAsync, but do NOT await it here so the JSON-RPC
+    // handler returns immediately and the HTTP/TCP command timeout does not
+    // apply to long-running rebuilds.
+    _ = Task.Run(async () =>
     {
-      var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, name, OpenMode.ForWrite);
-      var job = JobRegistry.Create($"Rebuilding corridor {name}");
-      corridor.Rebuild();
-      JobRegistry.Complete(job.JobId, new Dictionary<string, object?> { ["corridorName"] = name, ["state"] = GetCorridorState(corridor) });
-      return new Dictionary<string, object?>
+      try
       {
-        ["jobId"] = job.JobId,
-      };
+        await PluginRuntime.RunWithRequestContextAsync(
+          "rebuildCorridor",
+          $"{requestId ?? "job"}:job:{job.JobId}",
+          cancellationToken,
+          job.DrawingIdentity,
+          async () =>
+          {
+            cancellationToken.ThrowIfCancellationRequested();
+            JobRegistry.Progress(job.JobId, 10, $"Scheduling rebuild for corridor {name}", null);
+
+            var result = await CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
+            {
+              cancellationToken.ThrowIfCancellationRequested();
+
+              var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, name, OpenMode.ForWrite);
+
+              // Corridor.Rebuild() is synchronous and exposes no cancellation
+              // handle. Abort before entering and after it returns.
+              JobRegistry.Progress(job.JobId, 40, $"Rebuilding corridor {name}", null);
+              corridor.Rebuild();
+              cancellationToken.ThrowIfCancellationRequested();
+
+              return new Dictionary<string, object?>
+              {
+                ["corridorName"] = name,
+                ["state"] = GetCorridorState(corridor),
+              };
+            });
+
+            JobRegistry.Complete(job.JobId, result);
+            PluginLog.Info("Corridor", $"Rebuild completed for corridor '{name}' (job {job.JobId}).");
+            return result;
+          });
+      }
+      catch (OperationCanceledException)
+      {
+        JobRegistry.AcknowledgeCancellation(job.JobId);
+        PluginLog.Info("Corridor", $"Rebuild cancelled for corridor '{name}' (job {job.JobId}).");
+      }
+      catch (Exception ex)
+      {
+        PluginLog.Error("Corridor", $"Rebuild failed for corridor '{name}' (job {job.JobId}).", ex);
+        try
+        {
+          JobRegistry.Fail(job.JobId, ex.Message);
+        }
+        catch (Exception failEx)
+        {
+          PluginLog.Error("Corridor", $"Unable to mark job {job.JobId} as failed.", failEx);
+        }
+        job.CancellationSource = null;
+      }
+      finally
+      {
+        // Release the cancellation source once the worker has exited.
+        try
+        {
+          job.CancellationSource?.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+          // Already disposed (e.g. by Cancel/Dispose race); safe to ignore.
+        }
+      }
+    }, CancellationToken.None);
+
+    return Task.FromResult<object?>(new Dictionary<string, object?>
+    {
+      ["jobId"] = job.JobId,
+      ["state"] = "running",
+      ["message"] = $"Corridor '{name}' rebuild queued. Poll civil3d_job with action='status' to track progress.",
     });
   }
 
@@ -120,7 +201,17 @@ public static class CorridorCommands
 
   public static Task<object?> ComputeCorridorVolumesAsync(JsonObject? parameters)
   {
-    throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "computeCorridorVolumes is not implemented in the initial C# plugin build yet.");
+    var name = PluginRuntime.GetRequiredString(parameters, "name");
+    var corridorSurfaceName = PluginRuntime.GetRequiredString(parameters, "corridorSurface");
+    var referenceSurfaceName = PluginRuntime.GetRequiredString(parameters, "referenceSurface");
+
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var corridor = CivilObjectUtils.FindCorridorByName(civilDoc, transaction, name, OpenMode.ForRead);
+      var corridorSurface = FindCorridorSurfaceByName(corridor, corridorSurfaceName, transaction);
+      var referenceSurface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, referenceSurfaceName, OpenMode.ForRead);
+      return ComputeVolumeBetweenSurfaces(database, transaction, corridorSurface, referenceSurface);
+    });
   }
 
   private static Dictionary<string, object?> ToCorridorSummary(Corridor corridor)
@@ -139,90 +230,64 @@ public static class CorridorCommands
 
   private static List<Dictionary<string, object?>> ReadCorridorSurfaces(Corridor corridor, Transaction? transaction)
   {
-    var result = new List<Dictionary<string, object?>>();
-    foreach (var propertyName in new[] { "CorridorSurfaces", "Surfaces" })
-    {
-      if (CivilObjectUtils.GetPropertyValue<object>(corridor, propertyName) is not IEnumerable enumerable)
+    var corridorSurfaces = corridor.CorridorSurfaces;
+    return corridorSurfaces.Cast<CorridorSurface>()
+      .Select(surface => new Dictionary<string, object?>
       {
-        continue;
-      }
-
-      foreach (var item in enumerable)
-      {
-        result.Add(new Dictionary<string, object?>
-        {
-          ["name"] = CivilObjectUtils.GetName(item) ?? string.Empty,
-          ["boundaries"] = ReadBoundaryNames(item, transaction),
-        });
-      }
-
-      if (result.Count > 0)
-      {
-        break;
-      }
-    }
-
-    return result;
+        ["name"] = surface.Name,
+        ["surfaceId"] = surface.SurfaceId == ObjectId.Null ? null : surface.SurfaceId.Handle.ToString(),
+        ["boundaries"] = surface.Boundaries.Cast<CorridorSurfaceBoundary>().Select(boundary => boundary.Name).ToList(),
+      })
+      .ToList();
   }
 
   private static List<Dictionary<string, object?>> ReadCorridorFeatureLines(Corridor corridor)
   {
-    var features = new List<Dictionary<string, object?>>();
-    foreach (var propertyName in new[] { "FeatureLines", "CodeNameToFeatureLineMap" })
-    {
-      if (CivilObjectUtils.GetPropertyValue<object>(corridor, propertyName) is not IEnumerable enumerable)
+    var featureLines = corridor.FeatureLineCodeInfos;
+    return featureLines.Cast<FeatureLineCodeInfo>()
+      .Select(feature => new Dictionary<string, object?>
       {
-        continue;
-      }
-
-      foreach (var item in enumerable)
-      {
-        features.Add(new Dictionary<string, object?>
-        {
-          ["name"] = CivilObjectUtils.GetName(item) ?? item?.ToString(),
-        });
-      }
-
-      if (features.Count > 0)
-      {
-        break;
-      }
-    }
-
-    return features;
+        ["name"] = feature.CodeName,
+      })
+      .ToList();
   }
 
-  private static List<string> ReadBoundaryNames(object? surface, Transaction? transaction)
+  private static string GetCorridorState(Corridor corridor) => corridor.IsOutOfDate ? "out_of_date" : "built";
+
+  private static Autodesk.Civil.DatabaseServices.Surface FindCorridorSurfaceByName(Corridor corridor, string name, Transaction transaction)
   {
-    var names = new List<string>();
-    if (surface == null)
+    var definition = corridor.CorridorSurfaces.Cast<CorridorSurface>()
+      .FirstOrDefault(surface => string.Equals(surface.Name, name, StringComparison.OrdinalIgnoreCase))
+      ?? throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Corridor surface '{name}' was not found on corridor '{corridor.Name}'.");
+
+    if (definition.SurfaceId == ObjectId.Null)
     {
-      return names;
+      throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", $"Corridor surface '{name}' has no built Civil 3D surface ObjectId.");
     }
 
-    var boundaries = CivilObjectUtils.GetPropertyValue<object>(surface, "Boundaries") as IEnumerable;
-    if (boundaries == null)
-    {
-      return names;
-    }
-
-    foreach (var boundary in boundaries)
-    {
-      names.Add(CivilObjectUtils.GetName(boundary) ?? boundary?.ToString() ?? string.Empty);
-    }
-
-    return names;
+    return CivilObjectUtils.GetRequiredObject<Autodesk.Civil.DatabaseServices.Surface>(transaction, definition.SurfaceId, OpenMode.ForRead);
   }
 
-  private static string GetCorridorState(Corridor corridor)
+  private static Dictionary<string, object?> ComputeVolumeBetweenSurfaces(
+    Database database,
+    Transaction transaction,
+    Autodesk.Civil.DatabaseServices.Surface baseSurface,
+    Autodesk.Civil.DatabaseServices.Surface comparisonSurface)
   {
-    var isOutOfDate = CivilObjectUtils.GetPropertyValue<bool?>(corridor, "IsOutOfDate") ?? false;
-    if (isOutOfDate)
+    var temporaryName = $"MCP_TMP_CORRIDOR_VOLUME_{Guid.NewGuid():N}";
+    var volumeSurfaceId = TinVolumeSurface.Create(temporaryName, baseSurface.ObjectId, comparisonSurface.ObjectId);
+    var volumeSurface = CivilObjectUtils.GetRequiredObject<TinVolumeSurface>(transaction, volumeSurfaceId, OpenMode.ForRead);
+    var properties = volumeSurface.GetVolumeProperties();
+    return new Dictionary<string, object?>
     {
-      return "out_of_date";
-    }
-
-    var hasError = CivilObjectUtils.GetPropertyValue<bool?>(corridor, "HasErrors") ?? false;
-    return hasError ? "error" : "built";
+      ["cutVolume"] = properties.UnadjustedCutVolume,
+      ["fillVolume"] = properties.UnadjustedFillVolume,
+      ["netVolume"] = properties.UnadjustedNetVolume,
+      ["units"] = new Dictionary<string, object?>
+      {
+        ["volume"] = CivilObjectUtils.VolumeUnits(database),
+      },
+      ["source"] = "TinVolumeSurface.GetVolumeProperties",
+    };
   }
 }

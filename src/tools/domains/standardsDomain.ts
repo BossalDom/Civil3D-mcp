@@ -18,7 +18,6 @@ const StyleObjectTypeSchema = z.enum([
   "structure",
   "point",
   "section",
-  "label",
   "assembly",
 ]);
 

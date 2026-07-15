@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
@@ -354,11 +353,8 @@ public static class PipeHydraulicsCommands
   private static object? GetNamedMember(object? obj, string name)
   {
     if (obj == null) return null;
-    var type = obj.GetType();
-    var prop = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-    if (prop != null) return prop.GetValue(obj);
-    var method = type.GetMethod(name, BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
-    return method?.Invoke(obj, null);
+    return Civil3DCompatibility.GetPropertyValue(obj, name)
+      ?? Civil3DCompatibility.InvokeMethod(obj, name);
   }
 
   private static ObjectId GetAnyObjectId(object? obj, params string[] names)

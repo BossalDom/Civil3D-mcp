@@ -10,7 +10,23 @@ const HealthResponseSchema = z.object({
   operationInProgress: z.boolean(),
   currentOperation: z.string().nullable(),
   queueDepth: z.number(),
+  queueCapacity: z.number(),
+  currentOperationStartedAtUnixMs: z.number().nullable(),
+  currentRequestId: z.string().nullable(),
+  currentOperationDurationMs: z.number().nullable(),
   memoryUsageMb: z.number(),
+  logFilePath: z.string(),
+  fileLoggingHealthy: z.boolean(),
+  fileLoggingError: z.string().nullable(),
+  jobs: z.object({
+    total: z.number(),
+    running: z.number(),
+    completed: z.number(),
+    failed: z.number(),
+    cancelled: z.number(),
+    capacity: z.number(),
+    terminalRetentionMinutes: z.number(),
+  }),
 });
 
 export const PLUGIN_DOMAIN_DEFINITION: DomainToolDefinition = {

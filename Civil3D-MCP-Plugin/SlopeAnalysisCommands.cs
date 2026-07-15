@@ -1,6 +1,8 @@
-using System.Collections;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.Civil.ApplicationServices;
+using Autodesk.Civil.DatabaseServices;
+using CivilSurface = Autodesk.Civil.DatabaseServices.Surface;
 
 namespace Civil3DMcpPlugin;
 
@@ -29,7 +31,7 @@ public static class SlopeAnalysisCommands
     return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       // Resolve alignment
-      DBObject? alignment = null;
+      Alignment? alignment = null;
       if (!string.IsNullOrWhiteSpace(alignmentName))
         alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName!);
 
@@ -40,7 +42,7 @@ public static class SlopeAnalysisCommands
         throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", "No alignment found in drawing.");
 
       // Resolve profile
-      DBObject? profile = null;
+      Profile? profile = null;
       if (!string.IsNullOrWhiteSpace(profileName))
         profile = FindProfileByName(alignment, transaction, profileName!);
 
@@ -48,7 +50,7 @@ public static class SlopeAnalysisCommands
         profile = GetFirstProfile(alignment, transaction, preferFinishedGrade: true);
 
       // Resolve surface
-      DBObject? surface = null;
+      CivilSurface? surface = null;
       if (!string.IsNullOrWhiteSpace(surfaceName))
         surface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, surfaceName!, OpenMode.ForRead);
 
@@ -58,8 +60,8 @@ public static class SlopeAnalysisCommands
       if (profile == null || surface == null)
         throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", "Could not resolve profile or surface.");
 
-      var alignLen = CivilObjectUtils.GetPropertyValue<double?>(alignment, "Length") ?? 0;
-      var startSta = stationStart ?? CivilObjectUtils.GetPropertyValue<double?>(alignment, "StartingStation") ?? 0;
+      var alignLen = alignment.Length;
+      var startSta = stationStart ?? alignment.StartingStation;
       var endSta = stationEnd ?? (startSta + alignLen);
 
       var rows = new List<Dictionary<string, object?>>();
@@ -108,9 +110,9 @@ public static class SlopeAnalysisCommands
 
       return new Dictionary<string, object?>
       {
-        ["alignmentName"] = CivilObjectUtils.GetName(alignment) ?? alignmentName ?? "Unknown",
-        ["profileName"] = CivilObjectUtils.GetName(profile) ?? profileName ?? "Unknown",
-        ["surfaceName"] = CivilObjectUtils.GetName(surface) ?? surfaceName ?? "Unknown",
+        ["alignmentName"] = alignment.Name,
+        ["profileName"] = profile.Name,
+        ["surfaceName"] = surface.Name,
         ["cutSlopeRatio"] = $"{cutSlopeRatio}:1",
         ["fillSlopeRatio"] = $"{fillSlopeRatio}:1",
         ["benchWidth"] = benchWidth,
@@ -126,108 +128,9 @@ public static class SlopeAnalysisCommands
 
   public static Task<object?> CheckSlopeStabilityAsync(JsonObject? parameters)
   {
-    var alignmentName = PluginRuntime.GetOptionalString(parameters, "alignmentName");
-    var surfaceName = PluginRuntime.GetOptionalString(parameters, "surfaceName");
-    var maxCutRatio = PluginRuntime.GetOptionalDouble(parameters, "maxCutSlopeRatio") ?? 1.5;
-    var maxFillRatio = PluginRuntime.GetOptionalDouble(parameters, "maxFillSlopeRatio") ?? 2.0;
-    var maxCutHeight = PluginRuntime.GetOptionalDouble(parameters, "maxCutHeight") ?? 30.0;
-    var maxFillHeight = PluginRuntime.GetOptionalDouble(parameters, "maxFillHeight") ?? 40.0;
-    var stationInterval = PluginRuntime.GetOptionalDouble(parameters, "stationInterval") ?? 25.0;
-    var soilType = PluginRuntime.GetOptionalString(parameters, "soilType") ?? "granular";
-
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      DBObject? alignment = null;
-      if (!string.IsNullOrWhiteSpace(alignmentName))
-        alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName!);
-      if (alignment == null)
-        alignment = GetFirstAlignment(civilDoc, transaction);
-
-      DBObject? surface = null;
-      if (!string.IsNullOrWhiteSpace(surfaceName))
-        surface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, surfaceName!, OpenMode.ForRead);
-      if (surface == null)
-        surface = GetFirstSurface(civilDoc, transaction);
-
-      if (alignment == null || surface == null)
-        throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", "Alignment or surface not found.");
-
-      // Use slope analysis from the surface itself along the alignment
-      var alignLen = CivilObjectUtils.GetPropertyValue<double?>(alignment, "Length") ?? 0;
-      var startSta = CivilObjectUtils.GetPropertyValue<double?>(alignment, "StartingStation") ?? 0;
-      var endSta = startSta + alignLen;
-
-      var findings = new List<Dictionary<string, object?>>();
-      int okCount = 0, warnCount = 0, failCount = 0;
-
-      for (double sta = startSta; sta <= endSta + 0.01; sta += stationInterval)
-      {
-        var clampedSta = Math.Min(sta, endSta);
-        var (ptX, ptY) = GetAlignmentPointAtStation(alignment, clampedSta);
-
-        // Sample surface slope at this point
-        double surfaceSlope = GetSurfaceSlopePercent(surface, ptX, ptY);
-        double slopeRatio = surfaceSlope > 0 ? 100.0 / surfaceSlope : 999.0;
-
-        // Determine if this looks like a cut or fill area (simplified — use surface slope direction)
-        bool isCut = surfaceSlope > 0;
-        double allowableRatio = isCut ? maxCutRatio : maxFillRatio;
-        double allowableHeight = isCut ? maxCutHeight : maxFillHeight;
-
-        // Sample height: use surface elevation difference over sample distance
-        double slopeHeight = EstimateSlopeHeight(surface, ptX, ptY, stationInterval, slopeRatio);
-
-        string status;
-        if (slopeRatio < allowableRatio)
-          status = "FAIL";
-        else if (slopeRatio < allowableRatio * 1.2)
-          status = "WARN";
-        else
-          status = "OK";
-
-        bool benchingRequired = slopeHeight > allowableHeight;
-        if (benchingRequired && status == "OK") status = "WARN";
-
-        switch (status)
-        {
-          case "OK": okCount++; break;
-          case "WARN": warnCount++; break;
-          case "FAIL": failCount++; break;
-        }
-
-        if (status != "OK")
-        {
-          findings.Add(new Dictionary<string, object?>
-          {
-            ["station"] = Math.Round(clampedSta, 2),
-            ["condition"] = isCut ? "CUT" : "FILL",
-            ["surfaceSlopePct"] = Math.Round(surfaceSlope, 2),
-            ["slopeRatioHtoV"] = slopeRatio < 100 ? $"{slopeRatio:F1}:1" : "flat",
-            ["allowableRatio"] = $"{allowableRatio}:1",
-            ["estimatedHeight"] = Math.Round(slopeHeight, 1),
-            ["benchingRequired"] = benchingRequired,
-            ["status"] = status,
-          });
-        }
-
-        if (clampedSta >= endSta) break;
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["alignmentName"] = CivilObjectUtils.GetName(alignment) ?? alignmentName ?? "Unknown",
-        ["surfaceName"] = CivilObjectUtils.GetName(surface) ?? surfaceName ?? "Unknown",
-        ["soilType"] = soilType,
-        ["maxCutSlopeRatio"] = $"{maxCutRatio}:1",
-        ["maxFillSlopeRatio"] = $"{maxFillRatio}:1",
-        ["stationsChecked"] = okCount + warnCount + failCount,
-        ["okCount"] = okCount,
-        ["warnCount"] = warnCount,
-        ["failCount"] = failCount,
-        ["compliant"] = failCount == 0,
-        ["findings"] = findings,
-      };
-    });
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Slope stability cannot be determined from surface slope and a soil-type label. A valid check requires explicit cut/fill geometry plus engineer-approved geotechnical parameters and a factor-of-safety method. No result was generated.");
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
@@ -242,177 +145,99 @@ public static class SlopeAnalysisCommands
     return (benches * benchInterval * slopeRatio) + (benches * benchWidth) + (remaining * slopeRatio);
   }
 
-  private static double GetProfileElevationAtStation(DBObject profile, double station)
+  private static double GetProfileElevationAtStation(Profile profile, double station)
   {
     try
     {
-      var method = profile.GetType().GetMethod("ElevationAt",
-        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-      if (method != null)
-      {
-        var result = method.Invoke(profile, new object[] { station });
-        if (result != null) return Convert.ToDouble(result);
-      }
-
-      var method2 = profile.GetType().GetMethod("GetElevation",
-        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-      if (method2 != null)
-      {
-        var result2 = method2.Invoke(profile, new object[] { station });
-        if (result2 != null) return Convert.ToDouble(result2);
-      }
+      return profile.ElevationAt(station);
     }
-    catch { /* fall through */ }
-    return 0;
+    catch (Exception exception)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.API_ERROR",
+        $"Could not read profile '{profile.Name}' at station {station}: {exception.Message}");
+    }
   }
 
-  private static (double X, double Y) GetAlignmentPointAtStation(DBObject alignment, double station)
+  private static (double X, double Y) GetAlignmentPointAtStation(Alignment alignment, double station)
   {
     try
     {
-      var method = alignment.GetType().GetMethod("GetXYZAtStation",
-        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-      if (method != null)
-      {
-        var result = method.Invoke(alignment, new object?[] { station, null, null });
-        if (result != null)
-        {
-          var x = CivilObjectUtils.GetPropertyValue<double?>(result, "X") ?? 0;
-          var y = CivilObjectUtils.GetPropertyValue<double?>(result, "Y") ?? 0;
-          return (x, y);
-        }
-      }
-
-      // Try PointLocation method
-      var method2 = alignment.GetType().GetMethod("PointLocation",
-        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-      if (method2 != null)
-      {
-        var invokeArgs = new object?[] { station, 0.0, 0.0, 0.0 };
-        method2.Invoke(alignment, invokeArgs);
-        double xOut = Convert.ToDouble(invokeArgs[2] ?? 0.0);
-        double yOut = Convert.ToDouble(invokeArgs[3] ?? 0.0);
-        return (xOut, yOut);
-      }
+      double x = 0;
+      double y = 0;
+      alignment.PointLocation(station, 0, ref x, ref y);
+      return (x, y);
     }
-    catch { /* fall through */ }
-    return (0, 0);
+    catch (Exception exception)
+    {
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.API_ERROR",
+        $"Could not locate alignment '{alignment.Name}' at station {station}: {exception.Message}");
+    }
   }
 
-  private static double GetSurfaceElevation(DBObject surface, double x, double y)
+  private static double GetSurfaceElevation(CivilSurface surface, double x, double y)
   {
     try
     {
-      var method = surface.GetType().GetMethod("FindElevationAtXY",
-        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-      if (method != null)
-      {
-        var result = method.Invoke(surface, new object[] { x, y });
-        if (result != null) return Convert.ToDouble(result);
-      }
-
-      var method2 = surface.GetType().GetMethod("SampleElevations",
-        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-      if (method2 != null)
-      {
-        var result2 = method2.Invoke(surface, new object[] { new[] { new Autodesk.AutoCAD.Geometry.Point2d(x, y) } });
-        if (result2 is IEnumerable en)
-          foreach (var item in en)
-            return Convert.ToDouble(item);
-      }
+      return surface.FindElevationAtXY(x, y);
     }
-    catch { /* fall through */ }
-    return 0;
-  }
-
-  private static double GetSurfaceSlopePercent(DBObject surface, double x, double y)
-  {
-    try
+    catch (Exception exception)
     {
-      var method = surface.GetType().GetMethod("FindSlopeAtXY",
-        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-      if (method != null)
-      {
-        var result = method.Invoke(surface, new object[] { x, y });
-        if (result != null) return Math.Abs(Convert.ToDouble(result)) * 100;
-      }
+      throw new JsonRpcDispatchException(
+        "CIVIL3D.API_ERROR",
+        $"Could not sample surface '{surface.Name}' at ({x}, {y}): {exception.Message}");
     }
-    catch { /* fall through */ }
-    return 5.0; // default 5% slope if can't read surface
   }
 
-  private static double EstimateSlopeHeight(DBObject surface, double x, double y, double sampleDistance, double slopeRatio)
+  private static Alignment? GetFirstAlignment(CivilDocument civilDoc, Transaction transaction)
   {
-    // Estimate height from slope ratio and catch distance
-    // Simplified: assume catchpoint is at slopeRatio * H from edge, height is estimated from surface
-    return slopeRatio > 0 ? sampleDistance / slopeRatio * 2.0 : 0;
-  }
-
-  private static DBObject? GetFirstAlignment(object civilDoc, Transaction transaction)
-  {
-    try
+    foreach (ObjectId id in civilDoc.GetAlignmentIds())
     {
-      var ids = CivilObjectUtils.InvokeMethod(civilDoc, "GetAlignmentIds") as IEnumerable;
-      if (ids != null)
-        foreach (var item in ids)
-          if (item is ObjectId id && id != ObjectId.Null)
-            return CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead);
+      return CivilObjectUtils.GetRequiredObject<Alignment>(transaction, id, OpenMode.ForRead);
     }
-    catch { /* fall through */ }
+
     return null;
   }
 
-  private static DBObject? GetFirstSurface(object civilDoc, Transaction transaction)
+  private static CivilSurface? GetFirstSurface(CivilDocument civilDoc, Transaction transaction)
   {
-    try
+    foreach (ObjectId id in civilDoc.GetSurfaceIds())
     {
-      var surfaces = CivilObjectUtils.InvokeMethod(civilDoc, "GetSurfaceIds") as IEnumerable;
-      if (surfaces != null)
-        foreach (var item in surfaces)
-          if (item is ObjectId id && id != ObjectId.Null)
-            return CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead);
+      return CivilObjectUtils.GetRequiredObject<CivilSurface>(transaction, id, OpenMode.ForRead);
     }
-    catch { /* fall through */ }
+
     return null;
   }
 
-  private static DBObject? FindProfileByName(DBObject alignment, Transaction transaction, string name)
+  private static Profile? FindProfileByName(Alignment alignment, Transaction transaction, string name)
   {
-    try
+    foreach (ObjectId id in alignment.GetProfileIds())
     {
-      var ids = CivilObjectUtils.InvokeMethod(alignment, "GetProfileIds") as IEnumerable;
-      if (ids != null)
-        foreach (var item in ids)
-          if (item is ObjectId id && id != ObjectId.Null)
-          {
-            var p = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead);
-            if (string.Equals(CivilObjectUtils.GetName(p), name, StringComparison.OrdinalIgnoreCase))
-              return p;
-          }
+      var profile = CivilObjectUtils.GetRequiredObject<Profile>(transaction, id, OpenMode.ForRead);
+      if (string.Equals(profile.Name, name, StringComparison.OrdinalIgnoreCase))
+      {
+        return profile;
+      }
     }
-    catch { /* fall through */ }
+
     return null;
   }
 
-  private static DBObject? GetFirstProfile(DBObject alignment, Transaction transaction, bool preferFinishedGrade)
+  private static Profile? GetFirstProfile(Alignment alignment, Transaction transaction, bool preferFinishedGrade)
   {
-    try
+    Profile? first = null;
+    foreach (ObjectId id in alignment.GetProfileIds())
     {
-      DBObject? first = null;
-      var ids = CivilObjectUtils.InvokeMethod(alignment, "GetProfileIds") as IEnumerable;
-      if (ids != null)
-        foreach (var item in ids)
-          if (item is ObjectId id && id != ObjectId.Null)
-          {
-            var p = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead);
-            var name = CivilObjectUtils.GetName(p) ?? "";
-            first ??= p;
-            if (preferFinishedGrade && (name.IndexOf("FG", StringComparison.OrdinalIgnoreCase) >= 0
-              || name.IndexOf("Design", StringComparison.OrdinalIgnoreCase) >= 0))
-              return p;
-          }
-      return first;
+      var profile = CivilObjectUtils.GetRequiredObject<Profile>(transaction, id, OpenMode.ForRead);
+      first ??= profile;
+      if (preferFinishedGrade && (profile.Name.Contains("FG", StringComparison.OrdinalIgnoreCase)
+        || profile.Name.Contains("Design", StringComparison.OrdinalIgnoreCase)))
+      {
+        return profile;
+      }
     }
-    catch { return null; }
+
+    return first;
   }
 }

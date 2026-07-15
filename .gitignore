@@ -13,6 +13,7 @@ dist/
 .vs/
 .vscode/
 .idea/
+.windsurf/
 .DS_Store
 
 # Claude
@@ -40,12 +41,12 @@ civil3d_docs.txt
 docs/tutorials/
 docs/autodesk/
 docs/plans/
-docs/DEPLOYMENT.md
 docs/HYDROLOGY_GUIDE.md
 docs/tool-coverage-audit.md
 
 # Agent config files
 agents/
+.devin/
 
 # Help files (4041 files in docs/help/)
 docs/help/

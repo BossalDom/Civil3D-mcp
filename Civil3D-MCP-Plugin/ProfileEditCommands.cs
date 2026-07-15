@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
@@ -27,17 +26,7 @@ public static class ProfileEditCommands
       var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
       var profile = CivilObjectUtils.FindProfileByName(alignment, transaction, profileName, OpenMode.ForWrite);
 
-      var pvis = CivilObjectUtils.GetPropertyValue<object>(profile, "PVIs");
-      if (pvis == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Profile '{profileName}' does not expose a PVIs collection. Is it a layout profile?");
-      }
-
-      // ProfilePVICollection.AddPVI(station, elevation) or Add(station, elevation)
-      var added = CivilObjectUtils.InvokeMethod(pvis, "AddPVI", station, elevation)
-        ?? CivilObjectUtils.InvokeMethod(pvis, "Add", station, elevation);
+      profile.PVIs.AddPVI(station, elevation);
 
       return new Dictionary<string, object?>
       {
@@ -45,7 +34,7 @@ public static class ProfileEditCommands
         ["profileName"] = profile.Name,
         ["station"] = station,
         ["elevation"] = elevation,
-        ["success"] = added != null,
+        ["success"] = true,
       };
     });
   }
@@ -63,17 +52,9 @@ public static class ProfileEditCommands
       var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
       var profile = CivilObjectUtils.FindProfileByName(alignment, transaction, profileName, OpenMode.ForWrite);
 
-      var pvis = CivilObjectUtils.GetPropertyValue<object>(profile, "PVIs");
-      if (pvis == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Profile '{profileName}' does not expose a PVIs collection. Is it a layout profile?");
-      }
-
-      // ProfilePVICollection.DeletePVIByStation(station) or Remove(station)
-      var deleted = CivilObjectUtils.InvokeMethod(pvis, "DeletePVIByStation", station)
-        ?? CivilObjectUtils.InvokeMethod(pvis, "RemoveAt", station);
+      var targetPvi = FindPviNearStation(profile.PVIs, station)
+        ?? throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"No PVI found near station {station} in profile '{profileName}'.");
+      profile.PVIs.RemoveAt(targetPvi.RawStation, targetPvi.Elevation);
 
       return new Dictionary<string, object?>
       {
@@ -100,16 +81,14 @@ public static class ProfileEditCommands
       var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
       var profile = CivilObjectUtils.FindProfileByName(alignment, transaction, profileName, OpenMode.ForWrite);
 
-      var pvis = CivilObjectUtils.GetPropertyValue<object>(profile, "PVIs");
-      if (pvis == null)
+      if (!string.Equals(curveType, "symmetric_parabola", StringComparison.OrdinalIgnoreCase))
       {
         throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Profile '{profileName}' does not expose a PVIs collection. Is it a layout profile?");
+          "CIVIL3D.API_ERROR",
+          $"Curve type '{curveType}' is not implemented. Civil 3D's typed API path currently supports symmetric_parabola only.");
       }
 
-      // Find the PVI nearest to pviStation
-      var targetPvi = FindPviNearStation(pvis, pviStation);
+      var targetPvi = FindPviNearStation(profile.PVIs, pviStation);
       if (targetPvi == null)
       {
         throw new JsonRpcDispatchException(
@@ -117,18 +96,7 @@ public static class ProfileEditCommands
           $"No PVI found near station {pviStation} in profile '{profileName}'.");
       }
 
-      // Try to set curve length on the PVI object itself
-      // ProfilePVI.CurveLength or SetCurveLength(length) depending on Civil3D version
-      var curveLengthSet = TrySetPviCurveLength(targetPvi, length, curveType);
-      if (!curveLengthSet)
-      {
-        // Fall back: invoke AddPVIByParabolaCurve on the collection
-        var pviStation2 = CivilObjectUtils.GetPropertyValue<double?>(targetPvi, "Station") ?? pviStation;
-        var pviElev = CivilObjectUtils.GetPropertyValue<double?>(targetPvi, "Elevation") ?? 0;
-        CivilObjectUtils.InvokeMethod(pvis, "DeletePVIByStation", pviStation2);
-        _ = CivilObjectUtils.InvokeMethod(pvis, "AddPVIByParabolaCurve", pviStation2, pviElev, length)
-          ?? CivilObjectUtils.InvokeMethod(pvis, "AddPVI", pviStation2, pviElev);
-      }
+      profile.Entities.AddFreeSymmetricParabolaByPVIAndCurveLength(targetPvi, length);
 
       return new Dictionary<string, object?>
       {
@@ -151,55 +119,10 @@ public static class ProfileEditCommands
     var entityIndex = (int)(PluginRuntime.GetRequiredDouble(parameters, "entityIndex"));
     var grade = PluginRuntime.GetRequiredDouble(parameters, "grade");
 
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, alignmentName);
-      var profile = CivilObjectUtils.FindProfileByName(alignment, transaction, profileName, OpenMode.ForWrite);
-
-      var entities = CivilObjectUtils.GetPropertyValue<object>(profile, "Entities");
-      if (entities == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.TRANSACTION_FAILED",
-          $"Profile '{profileName}' does not expose an Entities collection.");
-      }
-
-      var entity = GetEntityByIndex(entities, entityIndex);
-      if (entity == null)
-      {
-        throw new JsonRpcDispatchException(
-          "CIVIL3D.OBJECT_NOT_FOUND",
-          $"No entity at index {entityIndex} in profile '{profileName}'.");
-      }
-
-      // Try setting Grade property
-      var gradeProp = entity.GetType().GetProperty("Grade",
-        BindingFlags.Public | BindingFlags.Instance);
-      if (gradeProp != null && gradeProp.CanWrite)
-      {
-        gradeProp.SetValue(entity, grade);
-      }
-      else
-      {
-        // Try SetGrade method
-        var result = CivilObjectUtils.InvokeMethod(entity, "SetGrade", grade);
-        if (result == null)
-        {
-          throw new JsonRpcDispatchException(
-            "CIVIL3D.TRANSACTION_FAILED",
-            $"Could not set grade on entity {entityIndex} — no writable Grade property or SetGrade method found.");
-        }
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["alignmentName"] = alignment.Name,
-        ["profileName"] = profile.Name,
-        ["entityIndex"] = entityIndex,
-        ["grade"] = grade,
-        ["success"] = true,
-      };
-    });
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      $"Cannot set grade {grade} on profile entity {entityIndex} in '{profileName}': ProfileTangent.Grade is read-only in the Civil 3D 2026 .NET API. " +
+      "Edit the adjoining PVIs instead.");
   }
 
   // ─── profileGetElevation ──────────────────────────────────────────────────
@@ -369,39 +292,7 @@ public static class ProfileEditCommands
 
       var bandSetId = LookupUtils.GetProfileViewBandSetId(civilDoc, transaction, bandSetName);
 
-      // ProfileView.BandSet.SetBandSetStyle(bandSetId) or
-      // writeView.BandSetStyleId = bandSetId (depending on API)
-      var bandSet = CivilObjectUtils.GetPropertyValue<object>(writeView, "BandSet");
-      if (bandSet != null)
-      {
-        // Try setting StyleId on the BandSet object
-        var styleProp = bandSet.GetType().GetProperty("StyleId",
-          BindingFlags.Public | BindingFlags.Instance);
-        if (styleProp != null && styleProp.CanWrite)
-        {
-          styleProp.SetValue(bandSet, bandSetId);
-        }
-        else
-        {
-          CivilObjectUtils.InvokeMethod(bandSet, "SetBandSetStyle", bandSetId);
-        }
-      }
-      else
-      {
-        // Direct property on ProfileView
-        var bsIdProp = writeView.GetType().GetProperty("BandSetStyleId",
-          BindingFlags.Public | BindingFlags.Instance);
-        if (bsIdProp != null && bsIdProp.CanWrite)
-        {
-          bsIdProp.SetValue(writeView, bandSetId);
-        }
-        else
-        {
-          throw new JsonRpcDispatchException(
-            "CIVIL3D.TRANSACTION_FAILED",
-            $"Could not apply band set — neither BandSet.StyleId nor BandSetStyleId is writable in this Civil 3D version.");
-        }
-      }
+      writeView.Bands.ImportBandSetStyle(bandSetId);
 
       return new Dictionary<string, object?>
       {
@@ -441,48 +332,14 @@ public static class ProfileEditCommands
       $"Profile view '{name}' was not found in model space.");
   }
 
-  private static object? GetEntityByIndex(object entities, int index)
+  private static ProfilePVI? FindPviNearStation(ProfilePVICollection pvis, double targetStation)
   {
-    var itemProp = entities.GetType().GetProperty("Item");
-    if (itemProp != null)
-    {
-      return itemProp.GetValue(entities, new object[] { index });
-    }
-
-    if (entities is System.Collections.IEnumerable enumerable)
-    {
-      var i = 0;
-      foreach (var entity in enumerable)
-      {
-        if (i++ == index)
-        {
-          return entity;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  private static object? FindPviNearStation(object pvis, double targetStation)
-  {
-    if (pvis is not System.Collections.IEnumerable enumerable)
-    {
-      return null;
-    }
-
-    object? closest = null;
+    ProfilePVI? closest = null;
     var minDist = double.MaxValue;
 
-    foreach (var pvi in enumerable)
+    foreach (ProfilePVI pvi in pvis)
     {
-      var st = CivilObjectUtils.GetPropertyValue<double?>(pvi, "Station");
-      if (st == null)
-      {
-        continue;
-      }
-
-      var dist = Math.Abs(st.Value - targetStation);
+      var dist = Math.Abs(pvi.RawStation - targetStation);
       if (dist < minDist)
       {
         minDist = dist;
@@ -491,29 +348,6 @@ public static class ProfileEditCommands
     }
 
     return closest;
-  }
-
-  private static bool TrySetPviCurveLength(object pvi, double length, string curveType)
-  {
-    // Try CurveLength property (Civil 3D 2020+)
-    var prop = pvi.GetType().GetProperty("CurveLength",
-      BindingFlags.Public | BindingFlags.Instance);
-    if (prop != null && prop.CanWrite)
-    {
-      prop.SetValue(pvi, length);
-      return true;
-    }
-
-    // Try symmetric/asymmetric curve length properties
-    var symProp = pvi.GetType().GetProperty("SymmetricCurveLength",
-      BindingFlags.Public | BindingFlags.Instance);
-    if (symProp != null && symProp.CanWrite)
-    {
-      symProp.SetValue(pvi, length);
-      return true;
-    }
-
-    return false;
   }
 
   /// <summary>

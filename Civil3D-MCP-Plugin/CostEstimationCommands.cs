@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
+using TinVolumeSurface = Autodesk.Civil.DatabaseServices.TinVolumeSurface;
 
 namespace Civil3DMcpPlugin;
 
@@ -26,6 +27,7 @@ public static class CostEstimationCommands
     var includeCorridorMaterials = PluginRuntime.GetOptionalBool(parameters, "includeCorridorMaterials") ?? true;
     var includePipeLengths = PluginRuntime.GetOptionalBool(parameters, "includePipeLengths") ?? true;
     var includeStructureCounts = PluginRuntime.GetOptionalBool(parameters, "includeStructureCounts") ?? true;
+    var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
 
     // Parse pay items from parameters
     var payItemsNode = parameters?["payItems"] as JsonArray;
@@ -38,23 +40,16 @@ public static class CostEstimationCommands
       // Earthwork volumes
       if (includeEarthwork && !string.IsNullOrWhiteSpace(baseSurface) && !string.IsNullOrWhiteSpace(designSurface))
       {
-        try
-        {
-          var (cutCy, fillCy) = GetEarthworkVolumes(civilDoc, transaction, baseSurface!, designSurface!);
-          quantityLines.Add(MakeLine("203.01", "Unclassified Excavation (Cut)", "CY", Math.Round(cutCy, 1), payItems));
-          quantityLines.Add(MakeLine("203.02", "Embankment (Fill)", "CY", Math.Round(fillCy, 1), payItems));
-        }
-        catch { /* surface not available */ }
+        var (cutCy, fillCy) = GetEarthworkVolumes(civilDoc, database, transaction, baseSurface!, designSurface!);
+        quantityLines.Add(MakeLine("203.01", "Unclassified Excavation (Cut)", "CY", Math.Round(cutCy, 1), payItems));
+        quantityLines.Add(MakeLine("203.02", "Embankment (Fill)", "CY", Math.Round(fillCy, 1), payItems));
       }
 
-      // Corridor material volumes
+      // Civil 3D 2026 exposes QTO totals through SampleLineGroup material lists,
+      // not through a Corridor.GetMaterialVolumes member.
       if (includeCorridorMaterials && !string.IsNullOrWhiteSpace(corridorName))
       {
-        var materials = GetCorridorMaterialVolumes(civilDoc, transaction, corridorName!);
-        foreach (var (name, volumeCy) in materials)
-        {
-          quantityLines.Add(MakeLine(string.Empty, name, "CY", Math.Round(volumeCy, 1), payItems));
-        }
+        throw CorridorMaterialCapabilityError(corridorName!);
       }
 
       // Pipe network lengths
@@ -79,18 +74,12 @@ public static class CostEstimationCommands
 
       // Write CSV
       var csvContent = BuildCsv(quantityLines, payItems.Count > 0);
-      try
-      {
-        File.WriteAllText(outputPath, csvContent, Encoding.UTF8);
-      }
-      catch (Exception ex)
-      {
-        throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"Failed to write CSV: {ex.Message}");
-      }
+      var canonicalOutputPath = FileBoundary.WriteAllTextAtomic(
+        outputPath, csvContent, Encoding.UTF8, overwrite, ".csv");
 
       return new Dictionary<string, object?>
       {
-        ["outputPath"] = outputPath,
+        ["outputPath"] = canonicalOutputPath,
         ["lineItemCount"] = quantityLines.Count,
         ["hasPricing"] = payItems.Count > 0,
         ["quantityLines"] = quantityLines,
@@ -110,6 +99,7 @@ public static class CostEstimationCommands
     var contingencyPct = PluginRuntime.GetOptionalDouble(parameters, "contingencyPercent") ?? 0.0;
     var mobilizationPct = PluginRuntime.GetOptionalDouble(parameters, "mobilizationPercent") ?? 5.0;
     var outputPath = PluginRuntime.GetOptionalString(parameters, "outputPath");
+    var overwrite = PluginRuntime.GetOptionalBool(parameters, "overwrite") ?? false;
 
     var payItemsNode = parameters?["payItems"] as JsonArray;
     var payItems = ParsePayItems(payItemsNode);
@@ -127,23 +117,15 @@ public static class CostEstimationCommands
       // Earthwork
       if (!string.IsNullOrWhiteSpace(baseSurface) && !string.IsNullOrWhiteSpace(designSurface))
       {
-        try
-        {
-          var (cutCy, fillCy) = GetEarthworkVolumes(civilDoc, transaction, baseSurface!, designSurface!);
-          AddCostLine(lineItems, payItems, "203.01", "Unclassified Excavation (Cut)", "CY", Math.Round(cutCy, 1), ref subtotal);
-          AddCostLine(lineItems, payItems, "203.02", "Embankment (Fill)", "CY", Math.Round(fillCy, 1), ref subtotal);
-        }
-        catch { /* skip if surfaces not available */ }
+        var (cutCy, fillCy) = GetEarthworkVolumes(civilDoc, database, transaction, baseSurface!, designSurface!);
+        AddCostLine(lineItems, payItems, "203.01", "Unclassified Excavation (Cut)", "CY", Math.Round(cutCy, 1), ref subtotal);
+        AddCostLine(lineItems, payItems, "203.02", "Embankment (Fill)", "CY", Math.Round(fillCy, 1), ref subtotal);
       }
 
       // Corridor materials
       if (!string.IsNullOrWhiteSpace(corridorName))
       {
-        var materials = GetCorridorMaterialVolumes(civilDoc, transaction, corridorName!);
-        foreach (var (matName, volumeCy) in materials)
-        {
-          AddCostLine(lineItems, payItems, string.Empty, matName, "CY", Math.Round(volumeCy, 1), ref subtotal);
-        }
+        throw CorridorMaterialCapabilityError(corridorName!);
       }
 
       // Pipe lengths
@@ -179,14 +161,10 @@ public static class CostEstimationCommands
 
       if (!string.IsNullOrWhiteSpace(outputPath))
       {
-        try
-        {
-          var csv = BuildCostCsv(lineItems, subtotal, mobilizationCost, contingencyCost, total);
-          File.WriteAllText(outputPath!, csv, Encoding.UTF8);
-          result["outputPath"] = outputPath;
-          result["exported"] = true;
-        }
-        catch { result["exportError"] = "Failed to write output file."; }
+        var csv = BuildCostCsv(lineItems, subtotal, mobilizationCost, contingencyCost, total);
+        result["outputPath"] = FileBoundary.WriteAllTextAtomic(
+          outputPath!, csv, Encoding.UTF8, overwrite, ".csv");
+        result["exported"] = true;
       }
 
       return (object?)result;
@@ -251,67 +229,34 @@ public static class CostEstimationCommands
     });
   }
 
-  private static (double CutCy, double FillCy) GetEarthworkVolumes(Autodesk.Civil.ApplicationServices.CivilDocument civilDoc, Transaction transaction, string baseSurface, string designSurface)
+  private static (double CutCy, double FillCy) GetEarthworkVolumes(Autodesk.Civil.ApplicationServices.CivilDocument civilDoc, Database database, Transaction transaction, string baseSurface, string designSurface)
   {
     var baseSurf = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, baseSurface, OpenMode.ForRead);
     var desSurf = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, designSurface, OpenMode.ForRead);
+    var temporaryName = $"MCP_TMP_COST_VOLUME_{Guid.NewGuid():N}";
+    var volumeSurfaceId = TinVolumeSurface.Create(temporaryName, baseSurf.ObjectId, desSurf.ObjectId);
+    var volumeSurface = CivilObjectUtils.GetRequiredObject<TinVolumeSurface>(transaction, volumeSurfaceId, OpenMode.ForRead);
+    var properties = volumeSurface.GetVolumeProperties();
+    var cubicUnitsToCubicYards = database.Insunits == UnitsValue.Meters
+      ? 1.3079506193
+      : database.Insunits == UnitsValue.Feet || database.Insunits.ToString().Contains("Survey", StringComparison.OrdinalIgnoreCase)
+        ? 1.0 / 27.0
+        : throw new JsonRpcDispatchException(
+          "CIVIL3D.API_ERROR",
+          $"Cannot convert drawing units '{database.Insunits}' to cubic yards for cost estimation.");
 
-    // Try volume surface comparison
-    var volumeMethod = baseSurf.GetType().GetMethod("ComputeVolumes",
-      System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-    if (volumeMethod != null)
-    {
-      var volumeResult = volumeMethod.Invoke(baseSurf, new object[] { desSurf });
-      if (volumeResult != null)
-      {
-        var cut = CivilObjectUtils.GetPropertyValue<double?>(volumeResult, "CutVolume") ?? 0;
-        var fill = CivilObjectUtils.GetPropertyValue<double?>(volumeResult, "FillVolume") ?? 0;
-        // Convert from cubic ft to cubic yards
-        return (cut / 27.0, fill / 27.0);
-      }
-    }
-
-    // Fallback: return zero (volumes not computable without API access)
-    return (0, 0);
+    return (
+      properties.UnadjustedCutVolume * cubicUnitsToCubicYards,
+      properties.UnadjustedFillVolume * cubicUnitsToCubicYards);
   }
 
-  private static List<(string Name, double VolumeCy)> GetCorridorMaterialVolumes(Autodesk.Civil.ApplicationServices.CivilDocument civilDoc, Transaction transaction, string corridorName)
+  private static JsonRpcDispatchException CorridorMaterialCapabilityError(string corridorName)
   {
-    var results = new List<(string, double)>();
-    try
-    {
-      // Find corridor
-      var corridorIds = CivilObjectUtils.InvokeMethod(civilDoc, "GetCorridorIds") as IEnumerable;
-      if (corridorIds == null) return results;
-
-      foreach (var item in corridorIds)
-      {
-        if (item is not ObjectId id || id == ObjectId.Null) continue;
-        var corridor = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead);
-        if (!string.Equals(CivilObjectUtils.GetName(corridor), corridorName, StringComparison.OrdinalIgnoreCase)) continue;
-
-        // Get material volumes via reflection
-        var materialListMethod = corridor.GetType().GetMethod("GetMaterialVolumes",
-          System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-        if (materialListMethod != null)
-        {
-          var materials = materialListMethod.Invoke(corridor, null) as IEnumerable;
-          if (materials != null)
-          {
-            foreach (var mat in materials)
-            {
-              var name = CivilObjectUtils.GetName(mat) ?? CivilObjectUtils.GetStringProperty(mat, "MaterialName") ?? "Material";
-              var volume = CivilObjectUtils.GetPropertyValue<double?>(mat, "CutVolume")
-                        ?? CivilObjectUtils.GetPropertyValue<double?>(mat, "Volume") ?? 0;
-              results.Add((name, volume / 27.0)); // convert ft³ to CY
-            }
-          }
-        }
-        break;
-      }
-    }
-    catch { /* skip */ }
-    return results;
+    return new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      $"Corridor material quantities for '{corridorName}' cannot be read from Corridor in the Civil 3D 2026 .NET API. " +
+      "Civil 3D exposes material totals through SampleLineGroup.GetTotalVolumeResultDataForMaterialList(Guid); " +
+      "supply a sample-line-group/material-list mapping in a dedicated QTO workflow instead.");
   }
 
   private static List<(string NetworkName, double LengthLf)> GetAllPipeNetworkLengths(object civilDoc, Transaction transaction)

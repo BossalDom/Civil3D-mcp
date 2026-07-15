@@ -30,6 +30,7 @@ export type ToolDomain =
   | "survey"
   | "plan_production"
   | "docs"
+  | "help"
   | "catchment"
   | "stm"
   | "plugin";

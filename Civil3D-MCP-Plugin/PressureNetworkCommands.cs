@@ -1,8 +1,11 @@
 using System.Collections;
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.Civil.ApplicationServices;
+using Autodesk.Civil.DatabaseServices;
+using Autodesk.Civil.DatabaseServices.Styles;
+using AcDbObject = Autodesk.AutoCAD.DatabaseServices.DBObject;
 
 namespace Civil3DMcpPlugin;
 
@@ -49,15 +52,15 @@ public static class PressureNetworkCommands
       var network = FindPressureNetworkByName(civilDoc, transaction, name, OpenMode.ForRead);
 
       var pipes = GetChildObjectIds(network, "GetPipeIds", "PipeIds", "Pipes")
-        .Select(id => ToPressurePipeData(CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead)))
+        .Select(id => ToPressurePipeData(CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, id, OpenMode.ForRead)))
         .ToList();
 
       var fittings = GetChildObjectIds(network, "GetFittingIds", "FittingIds", "Fittings")
-        .Select(id => ToPressureFittingData(CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead)))
+        .Select(id => ToPressureFittingData(CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, id, OpenMode.ForRead)))
         .ToList();
 
       var appurtenances = GetChildObjectIds(network, "GetAppurtenanceIds", "AppurtenanceIds", "Appurtenances")
-        .Select(id => ToPressureAppurtenanceData(CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead)))
+        .Select(id => ToPressureAppurtenanceData(CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, id, OpenMode.ForRead)))
         .ToList();
 
       return new Dictionary<string, object?>
@@ -83,26 +86,26 @@ public static class PressureNetworkCommands
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
-      var networkId = CreatePressureNetwork(civilDoc, name);
-      var network = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, networkId, OpenMode.ForWrite);
+      var networkId = CreatePressureNetwork(database, name);
+      var network = CivilObjectUtils.GetRequiredObject<PressurePipeNetwork>(transaction, networkId, OpenMode.ForWrite);
 
       // Layer
       var layer = PluginRuntime.GetOptionalString(parameters, "layer");
-      if (!string.IsNullOrWhiteSpace(layer) && network is Entity entity)
+      if (!string.IsNullOrWhiteSpace(layer))
       {
-        entity.Layer = layer;
+        network.Layer = layer;
       }
 
       // Parts list
       var partsListId = FindPressurePartsListId(civilDoc, transaction, partsListName);
-      TrySetObjectIdProperty(network, partsListId, "PartsListId", "CatalogId");
+      network.PartsListId = partsListId;
 
       // Reference surface
       var referenceSurface = PluginRuntime.GetOptionalString(parameters, "referenceSurface");
       if (!string.IsNullOrWhiteSpace(referenceSurface))
       {
         var surface = CivilObjectUtils.FindSurfaceByName(civilDoc, transaction, referenceSurface!, OpenMode.ForRead);
-        TrySetObjectIdProperty(network, surface.ObjectId, "ReferenceSurfaceId", "SurfaceId");
+        network.ReferenceSurfaceId = surface.ObjectId;
       }
 
       // Reference alignment
@@ -110,7 +113,7 @@ public static class PressureNetworkCommands
       if (!string.IsNullOrWhiteSpace(referenceAlignment))
       {
         var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, referenceAlignment!);
-        TrySetObjectIdProperty(network, alignment.ObjectId, "ReferenceAlignmentId", "AlignmentId");
+        network.ReferenceAlignmentId = alignment.ObjectId;
       }
 
       return new Dictionary<string, object?>
@@ -151,7 +154,7 @@ public static class PressureNetworkCommands
     {
       var network = FindPressureNetworkByName(civilDoc, transaction, networkName, OpenMode.ForWrite);
       var partsListId = FindPressurePartsListId(civilDoc, transaction, partsListName);
-      TrySetObjectIdProperty(network, partsListId, "PartsListId", "CatalogId");
+      ((PressurePipeNetwork)network).PartsListId = partsListId;
 
       return new Dictionary<string, object?>
       {
@@ -172,23 +175,9 @@ public static class PressureNetworkCommands
     var minCover = PluginRuntime.GetRequiredDouble(parameters, "minCoverDepth");
     var maxCover = PluginRuntime.GetOptionalDouble(parameters, "maxCoverDepth");
 
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var network = FindPressureNetworkByName(civilDoc, transaction, networkName, OpenMode.ForWrite);
-      TrySetDoubleProperty(network, minCover, "MinimumCoverDepth", "MinCoverDepth", "CoverDepthMin");
-      if (maxCover.HasValue)
-      {
-        TrySetDoubleProperty(network, maxCover.Value, "MaximumCoverDepth", "MaxCoverDepth", "CoverDepthMax");
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["networkName"] = networkName,
-        ["minCoverDepth"] = minCover,
-        ["maxCoverDepth"] = maxCover,
-        ["updated"] = true,
-      };
-    });
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 PressurePipeNetwork does not expose network-level minimum or maximum cover setters. No pipe elevations were changed; apply reviewed cover criteria through a pipe-run workflow.");
   }
 
   // -------------------------------------------------------------------------
@@ -197,44 +186,10 @@ public static class PressureNetworkCommands
 
   public static Task<object?> ValidatePressureNetworkAsync(JsonObject? parameters)
   {
-    var networkName = PluginRuntime.GetRequiredString(parameters, "networkName");
-
-    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var network = FindPressureNetworkByName(civilDoc, transaction, networkName, OpenMode.ForRead);
-      var issues = new List<Dictionary<string, object?>>();
-
-      // Cover depth check
-      var minCover = GetAnyDouble(network, "MinimumCoverDepth", "MinCoverDepth", "CoverDepthMin") ?? 0.0;
-      foreach (var pipeId in GetChildObjectIds(network, "GetPipeIds", "PipeIds", "Pipes"))
-      {
-        var pipe = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, pipeId, OpenMode.ForRead);
-        var cover = GetAnyDouble(pipe, "CoverDepth", "Cover", "MinCover");
-        if (cover.HasValue && minCover > 0 && cover.Value < minCover)
-        {
-          issues.Add(new Dictionary<string, object?>
-          {
-            ["type"] = "cover_violation",
-            ["severity"] = "error",
-            ["message"] = $"Pipe '{CivilObjectUtils.GetName(pipe)}' has cover {cover.Value:F3} < minimum {minCover:F3}",
-            ["objectHandle"] = CivilObjectUtils.GetHandle(pipe),
-          });
-        }
-      }
-
-      // Disconnected pipe ends (stub check)
-      var fittingIds = GetChildObjectIds(network, "GetFittingIds", "FittingIds", "Fittings").ToHashSet();
-      var appIds = GetChildObjectIds(network, "GetAppurtenanceIds", "AppurtenanceIds", "Appurtenances").ToHashSet();
-      var connectedIds = fittingIds.Union(appIds).ToHashSet();
-
-      var valid = issues.All(i => (string?)i["severity"] != "error");
-      return new Dictionary<string, object?>
-      {
-        ["networkName"] = networkName,
-        ["valid"] = valid,
-        ["issues"] = issues,
-      };
-    });
+    _ = PluginRuntime.GetRequiredString(parameters, "networkName");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Pressure-network validation requires explicit cover criteria and typed connection checks. The previous implementation treated missing criteria as zero and could return a false valid result; no validation result was produced.");
   }
 
   // -------------------------------------------------------------------------
@@ -251,15 +206,15 @@ public static class PressureNetworkCommands
       var network = FindPressureNetworkByName(civilDoc, transaction, networkName, OpenMode.ForRead);
 
       var pipes = GetChildObjectIds(network, "GetPipeIds", "PipeIds", "Pipes")
-        .Select(id => ExportPressurePipe(CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead), includeCoordinates))
+        .Select(id => ExportPressurePipe(CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, id, OpenMode.ForRead), includeCoordinates))
         .ToList();
 
       var fittings = GetChildObjectIds(network, "GetFittingIds", "FittingIds", "Fittings")
-        .Select(id => ExportPressureFitting(CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead), includeCoordinates))
+        .Select(id => ExportPressureFitting(CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, id, OpenMode.ForRead), includeCoordinates))
         .ToList();
 
       var appurtenances = GetChildObjectIds(network, "GetAppurtenanceIds", "AppurtenanceIds", "Appurtenances")
-        .Select(id => ExportPressureAppurtenance(CivilObjectUtils.GetRequiredObject<DBObject>(transaction, id, OpenMode.ForRead), includeCoordinates))
+        .Select(id => ExportPressureAppurtenance(CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, id, OpenMode.ForRead), includeCoordinates))
         .ToList();
 
       return new Dictionary<string, object?>
@@ -281,44 +236,11 @@ public static class PressureNetworkCommands
 
   public static Task<object?> ConnectPressureNetworksAsync(JsonObject? parameters)
   {
-    var targetName = PluginRuntime.GetRequiredString(parameters, "targetNetwork");
-    var sourceName = PluginRuntime.GetRequiredString(parameters, "sourceNetwork");
-
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var target = FindPressureNetworkByName(civilDoc, transaction, targetName, OpenMode.ForWrite);
-      var source = FindPressureNetworkByName(civilDoc, transaction, sourceName, OpenMode.ForWrite);
-
-      // Attempt native merge via reflection first
-      var merged = TryMergeNetworks(target, source);
-      if (!merged)
-      {
-        // Fallback: re-parent all source components to target by changing their network ID property
-        foreach (var pipeId in GetChildObjectIds(source, "GetPipeIds", "PipeIds", "Pipes"))
-        {
-          var pipe = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, pipeId, OpenMode.ForWrite);
-          TrySetObjectIdProperty(pipe, target.ObjectId, "NetworkId", "PressureNetworkId");
-        }
-        foreach (var fittingId in GetChildObjectIds(source, "GetFittingIds", "FittingIds", "Fittings"))
-        {
-          var fitting = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, fittingId, OpenMode.ForWrite);
-          TrySetObjectIdProperty(fitting, target.ObjectId, "NetworkId", "PressureNetworkId");
-        }
-        foreach (var appId in GetChildObjectIds(source, "GetAppurtenanceIds", "AppurtenanceIds", "Appurtenances"))
-        {
-          var app = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, appId, OpenMode.ForWrite);
-          TrySetObjectIdProperty(app, target.ObjectId, "NetworkId", "PressureNetworkId");
-        }
-        source.Erase();
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["targetNetwork"] = targetName,
-        ["sourceNetwork"] = sourceName,
-        ["connected"] = true,
-      };
-    });
+    _ = PluginRuntime.GetRequiredString(parameters, "targetNetwork");
+    _ = PluginRuntime.GetRequiredString(parameters, "sourceNetwork");
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 does not expose a managed pressure-network merge operation. Component NetworkId values are read-only and were not reassigned; neither network was changed.");
   }
 
   // -------------------------------------------------------------------------
@@ -329,15 +251,17 @@ public static class PressureNetworkCommands
   {
     var networkName = PluginRuntime.GetRequiredString(parameters, "networkName");
     var partName = PluginRuntime.GetRequiredString(parameters, "partName");
-    var startPoint = ReadPoint(parameters, "startPoint") ?? Point3d.Origin;
-    var endPoint = ReadPoint(parameters, "endPoint") ?? new Point3d(1, 0, 0);
+    var startPoint = ReadPoint(parameters, "startPoint")
+      ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "startPoint is required; an origin point will not be assumed.");
+    var endPoint = ReadPoint(parameters, "endPoint")
+      ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "endPoint is required; a unit-length pipe will not be fabricated.");
     var diameter = PluginRuntime.GetOptionalDouble(parameters, "diameter");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var network = FindPressureNetworkByName(civilDoc, transaction, networkName, OpenMode.ForWrite);
       var createdId = AddPressurePipeToNetwork(network, transaction, partName, startPoint, endPoint, diameter);
-      var pipe = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, createdId, OpenMode.ForRead);
+      var pipe = CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, createdId, OpenMode.ForRead);
 
       return new Dictionary<string, object?>
       {
@@ -376,33 +300,9 @@ public static class PressureNetworkCommands
     var newPartName = PluginRuntime.GetRequiredString(parameters, "newPartName");
     var newDiameter = PluginRuntime.GetOptionalDouble(parameters, "newDiameter");
 
-    return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
-    {
-      var network = FindPressureNetworkByName(civilDoc, transaction, networkName, OpenMode.ForWrite);
-      var pipe = FindPressureComponentByName(network, transaction, pipeName, "GetPipeIds", "PipeIds", "Pipes");
-      pipe = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, pipe.ObjectId, OpenMode.ForWrite);
-
-      // Try setting part via reflection
-      var partsListId = GetAnyObjectId(network, "PartsListId", "CatalogId");
-      if (partsListId != ObjectId.Null)
-      {
-        var partId = FindPressurePartId(transaction, partsListId, newPartName);
-        TrySetObjectIdProperty(pipe, partId, "PartId", "PartFamilyId");
-      }
-
-      if (newDiameter.HasValue)
-      {
-        TrySetDoubleProperty(pipe, newDiameter.Value, "InnerDiameter", "Diameter", "InnerDiameterOrWidth");
-      }
-
-      return new Dictionary<string, object?>
-      {
-        ["networkName"] = networkName,
-        ["pipeName"] = pipeName,
-        ["newPartName"] = newPartName,
-        ["resized"] = true,
-      };
-    });
+    throw new JsonRpcDispatchException(
+      "CIVIL3D.API_ERROR",
+      "Civil 3D 2026 PressurePipe does not expose a managed resize or part-swap method. No diameter or catalog part was changed.");
   }
 
   // -------------------------------------------------------------------------
@@ -413,14 +313,17 @@ public static class PressureNetworkCommands
   {
     var networkName = PluginRuntime.GetRequiredString(parameters, "networkName");
     var partName = PluginRuntime.GetRequiredString(parameters, "partName");
-    var position = ReadPoint(parameters, "position") ?? Point3d.Origin;
+    var position = ReadPoint(parameters, "position")
+      ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "position is required; drawing origin will not be assumed.");
     var rotation = PluginRuntime.GetOptionalDouble(parameters, "rotation") ?? 0.0;
+    if (Math.Abs(rotation) > 1.0e-12)
+      throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "Civil 3D 2026 AddFitting does not accept a rotation. No fitting was created.");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
     {
       var network = FindPressureNetworkByName(civilDoc, transaction, networkName, OpenMode.ForWrite);
       var createdId = AddPressureComponentToNetwork(network, transaction, partName, position, rotation, isFitting: true);
-      var fitting = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, createdId, OpenMode.ForRead);
+      var fitting = CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, createdId, OpenMode.ForRead);
 
       return new Dictionary<string, object?>
       {
@@ -456,8 +359,11 @@ public static class PressureNetworkCommands
   {
     var networkName = PluginRuntime.GetRequiredString(parameters, "networkName");
     var partName = PluginRuntime.GetRequiredString(parameters, "partName");
-    var position = ReadPoint(parameters, "position") ?? Point3d.Origin;
+    var position = ReadPoint(parameters, "position")
+      ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "position is required unless a future pipe-insertion workflow explicitly derives it.");
     var rotation = PluginRuntime.GetOptionalDouble(parameters, "rotation") ?? 0.0;
+    if (Math.Abs(rotation) > 1.0e-12)
+      throw new JsonRpcDispatchException("CIVIL3D.API_ERROR", "Civil 3D 2026 AddAppurtenance does not accept a rotation. No appurtenance was created.");
     var onPipeName = PluginRuntime.GetOptionalString(parameters, "onPipeName");
 
     return CivilExecution.WriteAsync<object?>((doc, civilDoc, database, transaction) =>
@@ -488,7 +394,7 @@ public static class PressureNetworkCommands
       }
 
       var createdId = AddPressureComponentToNetwork(network, transaction, partName, position, rotation, isFitting: false);
-      var app = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, createdId, OpenMode.ForRead);
+      var app = CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, createdId, OpenMode.ForRead);
 
       return new Dictionary<string, object?>
       {
@@ -503,16 +409,26 @@ public static class PressureNetworkCommands
   // Private helpers
   // =========================================================================
 
-  private static IEnumerable<DBObject> EnumeratePressureNetworks(object civilDoc, Transaction transaction, OpenMode openMode)
+  private static IEnumerable<AcDbObject> EnumeratePressureNetworks(object civilDoc, Transaction transaction, OpenMode openMode)
   {
     foreach (var objectId in GetPressureNetworkIds(civilDoc))
     {
-      yield return CivilObjectUtils.GetRequiredObject<DBObject>(transaction, objectId, openMode);
+      yield return CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, objectId, openMode);
     }
   }
 
   private static IEnumerable<ObjectId> GetPressureNetworkIds(object civilDoc)
   {
+    if (civilDoc is CivilDocument typedDocument)
+    {
+      foreach (ObjectId objectId in typedDocument.GetPressurePipeNetworkIds())
+      {
+        if (objectId != ObjectId.Null)
+          yield return objectId;
+      }
+      yield break;
+    }
+
     var candidates = new object?[]
     {
       CivilObjectUtils.InvokeMethod(civilDoc, "GetPressureNetworkIds"),
@@ -532,7 +448,7 @@ public static class PressureNetworkCommands
     }
   }
 
-  private static DBObject FindPressureNetworkByName(object civilDoc, Transaction transaction, string name, OpenMode openMode)
+  private static AcDbObject FindPressureNetworkByName(object civilDoc, Transaction transaction, string name, OpenMode openMode)
   {
     foreach (var network in EnumeratePressureNetworks(civilDoc, transaction, OpenMode.ForRead))
     {
@@ -543,7 +459,7 @@ public static class PressureNetworkCommands
 
       if (openMode == OpenMode.ForWrite)
       {
-        return CivilObjectUtils.GetRequiredObject<DBObject>(transaction, network.ObjectId, OpenMode.ForWrite);
+        return CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, network.ObjectId, OpenMode.ForWrite);
       }
 
       return network;
@@ -552,15 +468,15 @@ public static class PressureNetworkCommands
     throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Pressure network '{name}' was not found.");
   }
 
-  private static DBObject FindPressureComponentByName(
-    DBObject network,
+  private static AcDbObject FindPressureComponentByName(
+    AcDbObject network,
     Transaction transaction,
     string componentName,
     params string[] idMethods)
   {
     foreach (var objectId in GetChildObjectIds(network, idMethods))
     {
-      var component = CivilObjectUtils.GetRequiredObject<DBObject>(transaction, objectId, OpenMode.ForRead);
+      var component = CivilObjectUtils.GetRequiredObject<AcDbObject>(transaction, objectId, OpenMode.ForRead);
       if (string.Equals(CivilObjectUtils.GetName(component), componentName, StringComparison.OrdinalIgnoreCase))
       {
         return component;
@@ -571,7 +487,7 @@ public static class PressureNetworkCommands
       $"Component '{componentName}' was not found in network '{CivilObjectUtils.GetName(network)}'.");
   }
 
-  private static Dictionary<string, object?> ToPressureNetworkSummary(DBObject network, Transaction transaction)
+  private static Dictionary<string, object?> ToPressureNetworkSummary(AcDbObject network, Transaction transaction)
   {
     var pipeIds = GetChildObjectIds(network, "GetPipeIds", "PipeIds", "Pipes").ToList();
     var fittingIds = GetChildObjectIds(network, "GetFittingIds", "FittingIds", "Fittings").ToList();
@@ -588,7 +504,7 @@ public static class PressureNetworkCommands
     };
   }
 
-  private static Dictionary<string, object?> ToPressurePipeData(DBObject pipe)
+  private static Dictionary<string, object?> ToPressurePipeData(AcDbObject pipe)
   {
     var sp = GetPointProperty(pipe, "StartPoint", "PointAtStart");
     var ep = GetPointProperty(pipe, "EndPoint", "PointAtEnd");
@@ -597,8 +513,8 @@ public static class PressureNetworkCommands
     {
       ["name"] = CivilObjectUtils.GetName(pipe) ?? string.Empty,
       ["handle"] = CivilObjectUtils.GetHandle(pipe),
-      ["diameter"] = GetAnyDouble(pipe, "InnerDiameter", "InnerDiameterOrWidth", "Diameter") ?? 0.0,
-      ["length"] = GetAnyDouble(pipe, "Length3D", "Length2D", "Length") ?? 0.0,
+      ["diameter"] = GetAnyDouble(pipe, "InnerDiameter", "InnerDiameterOrWidth", "Diameter"),
+      ["length"] = GetAnyDouble(pipe, "Length3D", "Length2D", "Length"),
       ["material"] = GetAnyString(pipe, "Material", "PartFamilyName", "PartDescription") ?? string.Empty,
       ["startPoint"] = sp.HasValue ? new Dictionary<string, object?> { ["x"] = sp.Value.X, ["y"] = sp.Value.Y, ["z"] = sp.Value.Z } : null,
       ["endPoint"] = ep.HasValue ? new Dictionary<string, object?> { ["x"] = ep.Value.X, ["y"] = ep.Value.Y, ["z"] = ep.Value.Z } : null,
@@ -606,7 +522,7 @@ public static class PressureNetworkCommands
     };
   }
 
-  private static Dictionary<string, object?> ToPressureFittingData(DBObject fitting)
+  private static Dictionary<string, object?> ToPressureFittingData(AcDbObject fitting)
   {
     var pos = GetPointProperty(fitting, "Position", "Location", "CenterPoint");
 
@@ -620,7 +536,7 @@ public static class PressureNetworkCommands
     };
   }
 
-  private static Dictionary<string, object?> ToPressureAppurtenanceData(DBObject app)
+  private static Dictionary<string, object?> ToPressureAppurtenanceData(AcDbObject app)
   {
     var pos = GetPointProperty(app, "Position", "Location", "CenterPoint");
 
@@ -634,7 +550,7 @@ public static class PressureNetworkCommands
     };
   }
 
-  private static Dictionary<string, object?> ExportPressurePipe(DBObject pipe, bool includeCoords)
+  private static Dictionary<string, object?> ExportPressurePipe(AcDbObject pipe, bool includeCoords)
   {
     var data = ToPressurePipeData(pipe);
     if (!includeCoords)
@@ -646,7 +562,7 @@ public static class PressureNetworkCommands
     return data;
   }
 
-  private static Dictionary<string, object?> ExportPressureFitting(DBObject fitting, bool includeCoords)
+  private static Dictionary<string, object?> ExportPressureFitting(AcDbObject fitting, bool includeCoords)
   {
     var data = ToPressureFittingData(fitting);
     if (!includeCoords)
@@ -657,7 +573,7 @@ public static class PressureNetworkCommands
     return data;
   }
 
-  private static Dictionary<string, object?> ExportPressureAppurtenance(DBObject app, bool includeCoords)
+  private static Dictionary<string, object?> ExportPressureAppurtenance(AcDbObject app, bool includeCoords)
   {
     var data = ToPressureAppurtenanceData(app);
     if (!includeCoords)
@@ -668,262 +584,67 @@ public static class PressureNetworkCommands
     return data;
   }
 
-  private static ObjectId CreatePressureNetwork(object civilDoc, string name)
+  private static ObjectId CreatePressureNetwork(Database database, string name)
+    => PressurePipeNetwork.Create(database, name);
+
+  private static ObjectId AddPressurePipeToNetwork(AcDbObject network, Transaction transaction, string partName, Point3d startPoint, Point3d endPoint, double? diameter)
   {
-    foreach (var typeName in new[]
+    var pressureNetwork = (PressurePipeNetwork)network;
+    var part = FindPressurePart(transaction, pressureNetwork.PartsListId, partName, PressurePartType.PressurePipe);
+    var id = pressureNetwork.AddLinePipe(new LineSegment3d(startPoint, endPoint), part);
+    if (diameter.HasValue)
     {
-      "Autodesk.Civil.DatabaseServices.PressureNetwork",
-      "Autodesk.Civil.DatabaseServices.AeccPressureNetwork",
-    })
-    {
-      var type = Type.GetType($"{typeName}, AeccDbMgd", false)
-        ?? AppDomain.CurrentDomain.GetAssemblies()
-             .SelectMany(a => { try { return a.GetTypes(); } catch { return []; } })
-             .FirstOrDefault(t => t.FullName == typeName);
-
-      if (type == null)
-      {
-        continue;
-      }
-
-      foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.Static)
-        .Where(m => m.Name == "Create")
-        .OrderBy(m => m.GetParameters().Length))
-      {
-        var args = BuildCreateNetworkArgs(method.GetParameters(), civilDoc, name);
-        if (args == null)
-        {
-          continue;
-        }
-
-        try
-        {
-          var result = method.Invoke(null, args);
-          if (result is ObjectId id && id != ObjectId.Null)
-          {
-            return id;
-          }
-        }
-        catch
-        {
-          // Try next overload
-        }
-      }
+      var created = CivilObjectUtils.GetRequiredObject<PressurePipe>(transaction, id, OpenMode.ForRead);
+      var actualDiameter = GetAnyDouble(created, "InnerDiameter", "InnerDiameterOrWidth");
+      if (!actualDiameter.HasValue || Math.Abs(actualDiameter.Value - diameter.Value) > 1.0e-6)
+        throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"Catalog part '{partName}' does not match requested diameter {diameter.Value}. The pipe was not committed.");
     }
-
-    throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", "Unable to create a pressure network — no matching Civil 3D API overload found.");
+    return id;
   }
 
-  private static object?[]? BuildCreateNetworkArgs(ParameterInfo[] parameters, object civilDoc, string name)
+  private static ObjectId AddPressureComponentToNetwork(AcDbObject network, Transaction transaction, string partName, Point3d position, double rotation, bool isFitting)
   {
-    var args = new object?[parameters.Length];
-    for (var i = 0; i < parameters.Length; i++)
-    {
-      var paramType = parameters[i].ParameterType.IsByRef
-        ? parameters[i].ParameterType.GetElementType()!
-        : parameters[i].ParameterType;
-
-      if (paramType.Name == "CivilDocument") { args[i] = civilDoc; continue; }
-      if (paramType == typeof(string)) { args[i] = name; continue; }
-      if (paramType == typeof(bool)) { args[i] = false; continue; }
-      if (paramType == typeof(int)) { args[i] = 0; continue; }
-      if (paramType == typeof(ObjectId)) { args[i] = ObjectId.Null; continue; }
-
-      return null;
-    }
-
-    return args;
-  }
-
-  private static ObjectId AddPressurePipeToNetwork(DBObject network, Transaction transaction, string partName, Point3d startPoint, Point3d endPoint, double? diameter)
-  {
-    var partsListId = GetAnyObjectId(network, "PartsListId", "CatalogId");
-    var partId = partsListId != ObjectId.Null ? FindPressurePartId(transaction, partsListId, partName) : ObjectId.Null;
-
-    foreach (var method in network.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
-      .Where(m => m.Name.Contains("AddPipe", StringComparison.OrdinalIgnoreCase))
-      .OrderBy(m => m.GetParameters().Length))
-    {
-      var args = BuildAddPipeArgs(method.GetParameters(), partId, startPoint, endPoint, diameter ?? 0.0);
-      if (args == null) continue;
-
-      try
-      {
-        var result = method.Invoke(network, args);
-        var id = ExtractObjectId(result, args);
-        if (id != ObjectId.Null) return id;
-      }
-      catch { }
-    }
-
-    throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"Unable to add pressure pipe '{partName}' to network.");
-  }
-
-  private static object?[]? BuildAddPipeArgs(ParameterInfo[] parameters, ObjectId partId, Point3d start, Point3d end, double diameter)
-  {
-    var args = new object?[parameters.Length];
-    var points = new Queue<Point3d>(new[] { start, end });
-    var doubles = new Queue<double>(new[] { diameter, 0.0, 0.0 });
-    var usedPart = false;
-
-    for (var i = 0; i < parameters.Length; i++)
-    {
-      var pType = parameters[i].ParameterType.IsByRef ? parameters[i].ParameterType.GetElementType()! : parameters[i].ParameterType;
-
-      if (pType == typeof(ObjectId))
-      {
-        if (!usedPart && partId != ObjectId.Null) { args[i] = partId; usedPart = true; }
-        else { args[i] = ObjectId.Null; }
-        continue;
-      }
-
-      if (pType == typeof(Point3d)) { args[i] = points.Count > 0 ? points.Dequeue() : Point3d.Origin; continue; }
-      if (pType == typeof(double)) { args[i] = doubles.Count > 0 ? doubles.Dequeue() : 0.0; continue; }
-      if (pType == typeof(bool)) { args[i] = false; continue; }
-      if (pType == typeof(int)) { args[i] = 0; continue; }
-      if (pType == typeof(string)) { args[i] = string.Empty; continue; }
-
-      return null;
-    }
-
-    return args;
-  }
-
-  private static ObjectId AddPressureComponentToNetwork(DBObject network, Transaction transaction, string partName, Point3d position, double rotation, bool isFitting)
-  {
-    var partsListId = GetAnyObjectId(network, "PartsListId", "CatalogId");
-    var partId = partsListId != ObjectId.Null ? FindPressurePartId(transaction, partsListId, partName) : ObjectId.Null;
-    var methodToken = isFitting ? "AddFitting" : "AddAppurtenance";
-
-    foreach (var method in network.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
-      .Where(m => m.Name.Contains(methodToken, StringComparison.OrdinalIgnoreCase))
-      .OrderBy(m => m.GetParameters().Length))
-    {
-      var args = BuildAddComponentArgs(method.GetParameters(), partId, position, rotation);
-      if (args == null) continue;
-
-      try
-      {
-        var result = method.Invoke(network, args);
-        var id = ExtractObjectId(result, args);
-        if (id != ObjectId.Null) return id;
-      }
-      catch { }
-    }
-
-    throw new JsonRpcDispatchException("CIVIL3D.TRANSACTION_FAILED", $"Unable to add '{partName}' to pressure network.");
-  }
-
-  private static object?[]? BuildAddComponentArgs(ParameterInfo[] parameters, ObjectId partId, Point3d position, double rotation)
-  {
-    var args = new object?[parameters.Length];
-    var usedPart = false;
-    var usedPos = false;
-
-    for (var i = 0; i < parameters.Length; i++)
-    {
-      var pType = parameters[i].ParameterType.IsByRef ? parameters[i].ParameterType.GetElementType()! : parameters[i].ParameterType;
-
-      if (pType == typeof(ObjectId))
-      {
-        if (!usedPart && partId != ObjectId.Null) { args[i] = partId; usedPart = true; }
-        else { args[i] = ObjectId.Null; }
-        continue;
-      }
-
-      if (pType == typeof(Point3d)) { args[i] = position; usedPos = true; continue; }
-      if (pType == typeof(double)) { args[i] = rotation; continue; }
-      if (pType == typeof(bool)) { args[i] = false; continue; }
-      if (pType == typeof(int)) { args[i] = 0; continue; }
-      if (pType == typeof(string)) { args[i] = string.Empty; continue; }
-
-      return null;
-    }
-
-    _ = usedPos;
-    return args;
-  }
-
-  private static bool TryMergeNetworks(DBObject target, DBObject source)
-  {
-    foreach (var methodName in new[] { "MergeNetwork", "Merge", "AddNetwork" })
-    {
-      var method = target.GetType().GetMethod(methodName, BindingFlags.Public | BindingFlags.Instance);
-      if (method == null) continue;
-
-      try
-      {
-        method.Invoke(target, new object[] { source.ObjectId });
-        return true;
-      }
-      catch { }
-    }
-
-    return false;
+    _ = rotation;
+    var pressureNetwork = (PressurePipeNetwork)network;
+    var candidates = isFitting
+      ? new[] { PressurePartType.Elbow, PressurePartType.Tee, PressurePartType.Wye, PressurePartType.Cross, PressurePartType.Cap, PressurePartType.Coupling, PressurePartType.Plug, PressurePartType.Reducer }
+      : new[] { PressurePartType.Valve, PressurePartType.Pump, PressurePartType.Hydrant };
+    var part = FindPressurePart(transaction, pressureNetwork.PartsListId, partName, candidates);
+    return isFitting
+      ? pressureNetwork.AddFitting(position, part)
+      : pressureNetwork.AddAppurtenance(position, part);
   }
 
   private static ObjectId FindPressurePartsListId(object civilDoc, Transaction transaction, string partsListName)
   {
-    foreach (var collectionName in new[] { "PressurePartsLists", "PresPartsLists", "PressurePipePartsList" })
+    foreach (ObjectId objectId in ((CivilDocument)civilDoc).Styles.GetPressurePartLists())
     {
-      var styles = GetNamedMember(civilDoc, "Styles");
-      var collection = GetNamedMember(styles, collectionName) ?? GetNamedMember(civilDoc, collectionName);
-      foreach (var objectId in ToObjectIdsFlexible(collection))
-      {
-        var obj = transaction.GetObject(objectId, OpenMode.ForRead);
-        if (string.Equals(CivilObjectUtils.GetName(obj), partsListName, StringComparison.OrdinalIgnoreCase))
-        {
-          return objectId;
-        }
-      }
-    }
-
-    // Fallback: look in any parts list collection
-    foreach (var collectionName in new[] { "PartsListSet", "PartsLists", "PartsListCollection", "PartsListStyles" })
-    {
-      var styles = GetNamedMember(civilDoc, "Styles");
-      var collection = GetNamedMember(styles, collectionName) ?? GetNamedMember(civilDoc, collectionName);
-      foreach (var objectId in ToObjectIdsFlexible(collection))
-      {
-        var obj = transaction.GetObject(objectId, OpenMode.ForRead);
-        if (string.Equals(CivilObjectUtils.GetName(obj), partsListName, StringComparison.OrdinalIgnoreCase))
-        {
-          return objectId;
-        }
-      }
+      var list = CivilObjectUtils.GetRequiredObject<PressurePartList>(transaction, objectId, OpenMode.ForRead);
+      if (string.Equals(list.Name, partsListName, StringComparison.OrdinalIgnoreCase))
+        return objectId;
     }
 
     throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Pressure parts list '{partsListName}' was not found.");
   }
 
-  private static ObjectId FindPressurePartId(Transaction transaction, ObjectId partsListId, string partName)
+  private static PressurePartSize FindPressurePart(
+    Transaction transaction,
+    ObjectId partsListId,
+    string partName,
+    params PressurePartType[] partTypes)
   {
-    var partsList = transaction.GetObject(partsListId, OpenMode.ForRead);
-
-    foreach (var collectionName in new[] { "PipeFamilies", "FittingFamilies", "AppurtenanceFamilies", "PartFamilies", "PartFamilySet" })
+    if (partsListId.IsNull)
+      throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", "The pressure network does not have a pressure parts list assigned.");
+    var partsList = CivilObjectUtils.GetRequiredObject<PressurePartList>(transaction, partsListId, OpenMode.ForRead);
+    foreach (var partType in partTypes)
     {
-      var collection = GetNamedMember(partsList, collectionName);
-      foreach (var family in EnumerateObjects(collection))
+      foreach (var part in partsList.GetParts(partType))
       {
-        var familyId = GetAnyObjectId(family, "ObjectId", "Id");
-        if (string.Equals(CivilObjectUtils.GetName(family), partName, StringComparison.OrdinalIgnoreCase) && familyId != ObjectId.Null)
-        {
-          return familyId;
-        }
-
-        foreach (var size in EnumerateObjects(GetNamedMember(family, "PartSizes") ?? GetNamedMember(family, "SizeDataRecords") ?? GetNamedMember(family, "PartSizeFilter")))
-        {
-          var sizeId = GetAnyObjectId(size, "ObjectId", "Id");
-          var sizeName = CivilObjectUtils.GetName(size) ?? CivilObjectUtils.GetStringProperty(size, "Description");
-          if (sizeId != ObjectId.Null && string.Equals(sizeName, partName, StringComparison.OrdinalIgnoreCase))
-          {
-            return sizeId;
-          }
-        }
+        if (part.IsValid && string.Equals(part.Description, partName, StringComparison.OrdinalIgnoreCase))
+          return part;
       }
     }
-
-    return ObjectId.Null;
+    throw new JsonRpcDispatchException("CIVIL3D.OBJECT_NOT_FOUND", $"Exact pressure part '{partName}' was not found in parts list '{partsList.Name}'.");
   }
 
   private static IEnumerable<ObjectId> GetChildObjectIds(object owner, params string[] memberNames)
@@ -969,11 +690,8 @@ public static class PressureNetworkCommands
 
   private static object? GetNamedMember(object? value, string memberName)
   {
-    if (value == null) return null;
-    var prop = value.GetType().GetProperty(memberName, BindingFlags.Public | BindingFlags.Instance);
-    if (prop != null) return prop.GetValue(value);
-    var field = value.GetType().GetField(memberName, BindingFlags.Public | BindingFlags.Instance);
-    return field?.GetValue(value);
+    return Civil3DCompatibility.GetPropertyValue(value, memberName)
+      ?? Civil3DCompatibility.GetFieldValue(value, memberName);
   }
 
   private static string? ResolveObjectName(Transaction transaction, ObjectId objectId)
@@ -1032,9 +750,7 @@ public static class PressureNetworkCommands
     if (objectId == ObjectId.Null) return;
     foreach (var name in propertyNames)
     {
-      var prop = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-      if (prop == null || !prop.CanWrite || prop.PropertyType != typeof(ObjectId)) continue;
-      try { prop.SetValue(target, objectId); return; } catch { }
+      if (Civil3DCompatibility.TrySetProperty(target, name, objectId)) return;
     }
   }
 
@@ -1042,10 +758,7 @@ public static class PressureNetworkCommands
   {
     foreach (var name in propertyNames)
     {
-      var prop = target.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-      if (prop == null || !prop.CanWrite) continue;
-      if (prop.PropertyType != typeof(double) && prop.PropertyType != typeof(double?)) continue;
-      try { prop.SetValue(target, value); return; } catch { }
+      if (Civil3DCompatibility.TrySetProperty(target, name, value)) return;
     }
   }
 
@@ -1067,9 +780,9 @@ public static class PressureNetworkCommands
   {
     if (PluginRuntime.GetParameter(parameters, paramName) is not JsonObject node) return null;
     return new Point3d(
-      node["x"]?.GetValue<double>() ?? 0.0,
-      node["y"]?.GetValue<double>() ?? 0.0,
-      node["z"]?.GetValue<double>() ?? 0.0
+      node["x"]?.GetValue<double>() ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"{paramName}.x is required."),
+      node["y"]?.GetValue<double>() ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"{paramName}.y is required."),
+      node["z"]?.GetValue<double>() ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", $"{paramName}.z is required; elevation 0 will not be assumed.")
     );
   }
 }

@@ -8,16 +8,17 @@
 
   [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
   [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-  [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](./LICENSE)
-  [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.7-blueviolet)](https://modelcontextprotocol.io)
-  [![Civil 3D](https://img.shields.io/badge/Civil%203D-2023--2026-0696D7?logo=autodesk&logoColor=white)](https://www.autodesk.com/products/civil-3d)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+  [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-1.29-blueviolet)](https://modelcontextprotocol.io)
+  [![Civil 3D](https://img.shields.io/badge/Civil%203D-2026-0696D7?logo=autodesk&logoColor=white)](https://www.autodesk.com/products/civil-3d)
   [![Issues](https://img.shields.io/github/issues/Sacred-G/Civil3D-mcp)](https://github.com/Sacred-G/Civil3D-mcp/issues)
 
   <p>
     <a href="#quick-start">Quick Start</a> •
+    <a href="#autodesk-help-in-chat">Autodesk Help</a> •
     <a href="#installation">Installation</a> •
     <a href="./docs/DEPLOYMENT.md">Deployment</a> •
-    <a href="./docs/tools.md">Tool Reference</a>
+    <a href="./docs/tools.generated.md">Generated Tool Reference</a>
   </p>
 
 </div>
@@ -28,23 +29,100 @@
 
 **Civil3D-MCP** bridges AI assistants (Claude, Cline, Cursor, etc.) to a **live, open Civil 3D drawing** using the [Model Context Protocol](https://modelcontextprotocol.io). Give Claude your design brief — it reads your drawing, runs calculations, and makes changes in real time.
 
-```
-AI Client  ↔  civil3d-mcp (Node.js / stdio)  ↔  HTTP :8765  ↔  Civil3D-MCP-Plugin.dll (inside Civil 3D)
+```text
+MCP client  <-- stdio ----------->  civil3d-mcp (Node.js)
+HTTP client <-- HTTP :3000 ------>  civil3d-mcp (Node.js)
+civil3d-mcp <-- JSON-RPC/TCP :8080 --> Civil3DMcpPlugin.dll --> Civil 3D 2026 API
 ```
 
 This is the **MCP server** (TypeScript). You also need the **Civil 3D .NET plugin** — see [Installation](#installation).
 
 ### What Changed Recently
 
-- Native workflow handlers now cover major QC, grading, hydrology, plan-production, and data-shortcut flows instead of relying only on client-side orchestration.
-- Claude Code can now be registered with a single project-scoped command that installs dependencies, builds the Node server, and writes the repo `.mcp.json` entry.
-- Repository-generated tool inventories live in [`output_repo_tools`](./output_repo_tools), making it easier to audit what is already implemented versus what still belongs on the roadmap.
+- Production-ready host execution now includes bounded queues and jobs,
+  cancellation, idempotency, structured telemetry, readiness endpoints, and
+  observable rotating plugin logs.
+- **New:** `civil3d_help` searches the locally installed Autodesk Civil 3D help,
+  returns cited topics with screenshots, and surfaces matching tutorial videos in chat.
+- The default MCP surface is compact: 34 public tools cover every domain. The
+  complete 219-tool surface can be enabled when a client needs specialized aliases.
+- Native workflow handlers cover major QC, grading, hydrology, plan-production,
+  and data-shortcut flows instead of relying only on client-side orchestration.
+- Claude Code can be registered with a single project-scoped command that
+  installs dependencies, builds the Node server, and writes the repo `.mcp.json` entry.
+- Claude Desktop now has a self-contained MCPB installer plus a legacy DXT
+  compatibility artifact, generated with `npm run package:claude`.
+- The release-checked inventory is generated from the runtime manifest at
+  [`docs/tools.generated.md`](./docs/tools.generated.md).
+
+---
+
+## Autodesk Help in Chat
+
+Agents can now answer Civil 3D how-to questions from the Autodesk Offline Help
+installed on the user's machine. The `civil3d_help` tool auto-discovers Civil 3D
+help under Program Files, builds a local search index, and returns:
+
+- cleaned, version-matched Autodesk topic text with a canonical citation;
+- useful screenshots and diagrams directly in the chat response;
+- the best matching Autodesk tutorial video as a player resource;
+- a direct MP4 link when the chat client cannot embed the player.
+
+For example, an agent can search for grading guidance:
+
+```json
+{
+  "action": "search",
+  "query": "how do I create grading criteria?",
+  "version": "2026"
+}
+```
+
+Or request only matching videos:
+
+```json
+{
+  "action": "search_videos",
+  "query": "create grading criteria",
+  "maxVideos": 2
+}
+```
+
+The bundled 2026 catalog currently contains 47 Civil 3D tutorial videos. See the
+[Autodesk grading-criteria video](https://help.autodesk.com/videos/hmdXBmbDrmD4RJG46g4xxLXnNrBqHIIC/video.mp4)
+for an example. Topic and image retrieval remains local and works without the
+Civil 3D drawing plugin; Autodesk-hosted video playback requires internet access.
+
+The first topic query creates a compressed cache under
+`%LOCALAPPDATA%\Civil3DMcp\help-index`. Later queries reuse that cache and full
+topic retrieval is effectively immediate. See [Local Autodesk help search](#local-autodesk-help-search)
+for configuration and additional examples.
 
 ---
 
 ## Quick Start
 
 If you want the fastest path from clone to a working Claude + Civil 3D setup on Windows:
+
+For Claude Desktop, a release `.mcpb` is the easiest Node-side installation:
+
+1. Open **Settings > Extensions > Advanced settings > Install Extension**.
+2. Select `civil3d-mcp-<version>.mcpb` and keep ports `8080` and `3000` unless
+   your local setup uses different ports.
+3. Open Civil 3D and load the native plugin with `NETLOAD` or the `APPLOAD`
+   Startup Suite.
+4. Ask Claude to run `civil3d_health`.
+
+The extension installs the Node MCP server and its production dependencies. It
+does not install the native Autodesk plugin. Maintainers can build both the
+current `.mcpb` and legacy `.dxt` files with:
+
+```powershell
+npm install
+npm run package:claude
+```
+
+For a source-based or Claude Code installation:
 
 1. Clone and build the Node side:
 
@@ -58,7 +136,8 @@ If you want the fastest path from clone to a working Claude + Civil 3D setup on 
 2. Build and `NETLOAD` the Civil 3D plugin:
 
    ```powershell
-   dotnet build .\Civil3D-MCP-Plugin\Civil3DMcpPlugin.csproj -c Release
+   dotnet build .\Civil3D-MCP-Plugin\Civil3DMcpPlugin.csproj -c Release `
+     /p:Civil3DReferencesPath="C:\Program Files\Autodesk\AutoCAD 2026\C3D"
    ```
 
 3. Register Claude Code for this repo:
@@ -77,7 +156,10 @@ If you want the fastest path from clone to a working Claude + Civil 3D setup on 
 
 ## Features
 
-- **180+ MCP tools** covering the complete Civil 3D design workflow
+- **Compact default MCP surface** with 34 public tools; all 219 registered
+  routes remain internally callable or available as opt-in aliases
+- **Local Autodesk help in chat** — version-matched topics, screenshots,
+  diagrams, citations, and playable Civil 3D tutorial videos
 - **Native workflow execution** for corridor QC, surface comparison, project startup, grading conversion, plan publish, data shortcuts, and hydrology pipelines
 - **Full road design pipeline** — alignments, profiles, corridors, cross-sections, superelevation
 - **Surface analysis** — elevation bands, slope distribution, aspect, watershed, cut/fill volumes
@@ -94,27 +176,110 @@ If you want the fastest path from clone to a working Claude + Civil 3D setup on 
 - **Sight distance** calculations and AASHTO stopping sight distance checks
 - **Assembly/subassembly** creation and editing
 
+### Protected action flow
+
+Destructive, file-writing, import/export, and other non-retryable drawing
+mutations use a three-step policy flow:
+
+1. Call `civil3d_preview_action` with the target `toolName`, `action`, and the
+   exact parameters to validate the operation and learn whether approval is required.
+2. If required, call `civil3d_request_approval` with the same values. It issues
+   a short-lived, single-use token bound to the active drawing and those exact parameters.
+3. Retry the target tool call with `approvalToken`. Changing the drawing,
+   action, or parameters invalidates the token.
+
+Set `CIVIL3D_APPROVAL_MODE=disabled` only for isolated local development or
+test environments; production deployments should retain the default policy.
+
+### Canonical tools and aliases
+
+Aliases do not unlock extra Civil 3D capabilities. They are narrower convenience
+names for actions already available through a canonical domain tool.
+
+| Surface | Exposed tools | How to call an operation |
+|---|---:|---|
+| Default MCP client | 34 | Call a canonical domain tool and provide `action`. |
+| MCP client with aliases enabled | 219 | Use either canonical tools or specialized alias names. |
+| HTTP `/execute` and orchestration | 219 | All registered routes remain internally callable in either mode. |
+
+For example, these calls are equivalent:
+
+```json
+{
+  "tool": "civil3d_surface",
+  "parameters": {
+    "action": "volume_calculate",
+    "baseSurface": "Existing Ground",
+    "comparisonSurface": "Finished Grade"
+  }
+}
+```
+
+```json
+{
+  "tool": "civil3d_surface_volume_calculate",
+  "parameters": {
+    "baseSurface": "Existing Ground",
+    "comparisonSurface": "Finished Grade"
+  }
+}
+```
+
+The compact default is recommended because it gives the model fewer overlapping
+tool descriptions while preserving every operation. To expose all specialized
+aliases, set this variable in the environment that starts the MCP server, then
+restart the client connection:
+
+```powershell
+$env:CIVIL3D_ENABLE_TOOL_ALIASES = "true"
+npm run start
+```
+
+For a client-managed server, put the variable in its MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "civil3d-mcp": {
+      "command": "node",
+      "args": ["C:/path/to/civil3d-mcp/build/index.js"],
+      "env": {
+        "CIVIL3D_ENABLE_TOOL_ALIASES": "true"
+      }
+    }
+  }
+}
+```
+
+Discover operations through the `civil3d://catalog/tools` MCP resource or
+[`docs/tools.generated.md`](./docs/tools.generated.md). Canonical rows list
+their supported actions; alias rows provide the corresponding convenience name.
+Approval requirements are identical for canonical and alias calls.
+
 ---
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Client["AI Client\n(Claude / Cline / Cursor)"] -->|"MCP stdio"| Server["civil3d-mcp\nNode.js MCP Server"]
-    Server -->|"POST :8765/execute"| Plugin
+    Client["MCP Client\n(Claude / Cline / Cursor)"] <-->|"MCP stdio"| Server["civil3d-mcp\nNode.js"]
+    HttpClient["Local HTTP Client"] -->|"HTTP :3000"| Server
+    Server <-->|"JSON-RPC/TCP :8080"| Plugin
 
     subgraph Civil3D ["Autodesk Civil 3D"]
-        Plugin["Civil3D-MCP-Plugin.dll\nHTTP Listener"]
-        Queue["ConcurrentQueue\n(thread-safe)"]
-        Idle["Application.Idle\n(main thread)"]
-        Router["CommandRouter"]
-        API["Civil 3D .NET API"]
+        Plugin["Civil3DMcpPlugin.dll\nTCP Listener"]
+        Queue["Bounded Host Queue"]
+        Context["ExecuteInCommandContextAsync"]
+        Safety["Document Lock + Transaction"]
+        API["Civil 3D 2026 .NET API"]
 
-        Plugin --> Queue --> Idle --> Router --> API
+        Plugin --> Queue --> Context --> Safety --> API
     end
 ```
 
-> **Why `Application.Idle`?** Civil 3D (like Blender) requires all database operations on the main thread. The plugin queues incoming HTTP requests and drains the queue on the main thread's idle event — giving full, safe access to the Civil 3D .NET API.
+Civil 3D database operations execute inside Autodesk command context under a
+bounded, serialized host gate. Mutations additionally use a document lock and a
+narrow transaction; callers never mutate a drawing directly from Node.js.
 
 ---
 
@@ -123,9 +288,9 @@ flowchart LR
 | Component | Version |
 |---|---|
 | Node.js | 18+ |
-| Civil 3D | 2023, 2024, 2025, or 2026 |
+| Civil 3D | 2026 (live validated) |
 | .NET SDK | 8.0 |
-| Civil 3D API refs | Local DLLs in `C_References/` |
+| Civil 3D API refs | Licensed local installation or untracked reference directory |
 | Visual Studio | 2022 recommended |
 
 ---
@@ -164,16 +329,39 @@ npm run claude:add:user
 npm run claude:print-add
 ```
 
-### 2 — Build & Load the C# Plugin
+### 1.6 — Claude Desktop Extension Package
 
-**Prerequisites:** Civil 3D 2023+, .NET 8 SDK, and local Civil 3D API assemblies copied into `C_References/`
+Current Claude Desktop releases install MCP extensions from `.mcpb` files. The
+former DXT format was renamed to MCPB, so the packaging command also emits a
+byte-for-byte `.dxt` compatibility copy for older releases:
 
 ```powershell
-dotnet build .\Civil3D-MCP-Plugin\Civil3DMcpPlugin.csproj -c Release
+npm run package:claude
+```
+
+Generated files are written to `dist/claude-desktop/` and include SHA-256
+checksums. Install the `.mcpb` from **Claude Desktop > Settings > Extensions >
+Advanced settings > Install Extension**. The package exposes installer fields
+for the Civil 3D host and plugin port, alias mode, log level, and the local HTTP
+bridge port (default `3000`).
+
+### 2 — Build & Load the C# Plugin
+
+**Prerequisites:** Civil 3D 2026, .NET 8 SDK, and licensed local Civil 3D managed
+API assemblies. Autodesk binaries are intentionally not tracked or published by
+this repository.
+
+```powershell
+$refs = "C:\Program Files\Autodesk\AutoCAD 2026\C3D"
+dotnet build .\Civil3D-MCP-Plugin\Civil3DMcpPlugin.csproj -c Release `
+  /p:Civil3DReferencesPath="$refs"
 # Output: Civil3D-MCP-Plugin\bin\Release\net8.0-windows\Civil3DMcpPlugin.dll
 ```
 
-The plugin project resolves Autodesk references from [`C_References`](./C_References). At minimum, make sure these local DLLs are present:
+An untracked `C_References` directory remains the local fallback when
+`Civil3DReferencesPath` is omitted.
+
+At minimum, the configured directory must contain:
 
 ```text
 accoremgd.dll
@@ -181,6 +369,7 @@ AcDbMgd.dll
 acmgd.dll
 AecBaseMgd.dll
 AeccDbMgd.dll
+AeccPressurePipesMgd.dll
 ```
 
 **Load into Civil 3D:**
@@ -194,9 +383,9 @@ Once loaded, three commands are available in the Civil 3D command line:
 
 | Command | Description |
 |---|---|
-| `MCPSTART` | Start the HTTP server (auto-starts on load) |
-| `MCPSTOP` | Stop the HTTP server |
-| `MCPSTATUS` | Show server status and port |
+| `C3DMCPSTART` | Start the JSON-RPC server (auto-starts on plugin load) |
+| `C3DMCPSTOP` | Stop the JSON-RPC server |
+| `C3DMCPSTATUS` | Show server status, port, and queue depth |
 
 ### 3 — Configure Your AI Client
 
@@ -208,7 +397,8 @@ npm run claude:add
 
 That command registers the bootstrap launcher in Claude Code and keeps the repo self-contained. Use `npm run claude:print-add` if you want to inspect the exact `claude mcp add` command without modifying config.
 
-**Claude Desktop** — `claude_desktop_config.json`:
+**Claude Desktop** — install the generated `.mcpb` package. For source-based
+development, `claude_desktop_config.json` remains supported:
 
 ```json
 {
@@ -239,23 +429,27 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 > → `civil3d_alignment` → returns names, station ranges, lengths
 
 > *"Run a full QC check on the corridor and give me a report."*
-> → `civil3d_workflow_corridor_qc_report` → checks targets, regions, rebuild errors, exports report
+> → `civil3d_workflow` with `action: "corridor_qc_report"`
 
 > *"Trace the flow path from coordinate (5000, 3200) and estimate the peak runoff using the Rational Method."*
-> → `civil3d_hydrology_watershed_runoff_workflow` → delineates watershed, calculates Q=CiA
+> → `civil3d_hydrology` with `action: "watershed_runoff_workflow"`
 
-> *"Create a Plan/Profile sheet set for alignment 'Mainline' and export to PDF."*
-> → `civil3d_plan_profile_sheet_create` → `civil3d_workflow_plan_production_publish`
+> *"Publish the existing Plan Production sheet set to PDF."*
+> → `civil3d_workflow` with `action: "plan_production_publish"`
 
 > *"Size the storm drain network for a 10-year storm and check all pipe velocities."*
-> → `civil3d_pipe_network_size` → `civil3d_pipe_network_hydraulics`
+> → `civil3d_pipe` with `action: "size_network"`, then `action: "hydraulic_analysis"`
 
 > *"Calculate cut/fill volumes between the existing ground and proposed surface."*
-> → `civil3d_surface_volume_calculate` → `civil3d_surface_volume_report`
+> → `civil3d_surface` with `action: "volume_calculate"`, then `action: "volume_report"`
 
 ---
 
-## Tool Reference (180+ tools)
+## Tool Reference (217 catalog entries)
+
+The generated, release-checked inventory is [docs/tools.generated.md](./docs/tools.generated.md).
+It includes both canonical tools and specialized aliases. Canonical rows list
+one or more operations; alias rows show an em dash in the **Operations** column.
 
 <details>
 <summary><strong>Drawing Info & Context (7 tools)</strong></summary>
@@ -287,7 +481,7 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 </details>
 
 <details>
-<summary><strong>Alignment (10 tools)</strong></summary>
+<summary><strong>Alignment (9 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -295,7 +489,6 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 | `civil3d_alignment_report` | Builds structured alignment geometry report |
 | `civil3d_alignment_get_station_offset` | Returns station/offset of an XY point relative to an alignment |
 | `civil3d_alignment_add_tangent` | Appends a fixed tangent entity to an alignment |
-| `civil3d_alignment_add_curve` | Appends a fixed horizontal curve to an alignment |
 | `civil3d_alignment_add_spiral` | Appends a spiral (transition curve) to an alignment |
 | `civil3d_alignment_delete_entity` | Deletes a tangent/curve/spiral entity by index |
 | `civil3d_alignment_offset_create` | Creates a new offset alignment at a constant distance |
@@ -380,18 +573,17 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 | `civil3d_section_view_create` | Create section views for a sample line group |
 | `civil3d_section_view_list` | List section views in the drawing |
 | `civil3d_section_view_update_style` | Update display/band set style on existing section views |
-| `civil3d_section_view_group_create` | Create a multi-row grid layout of section views |
-| `civil3d_section_view_export` | Export section data to CSV/text (offsets, elevations, materials) |
+| `civil3d_section_view_group_create` | Create section views using the drawing's draft-placement settings |
+| `civil3d_section_view_export` | Export section station, source, offset, and elevation data to CSV |
 
 </details>
 
 <details>
-<summary><strong>Intersection Design (3 tools)</strong></summary>
+<summary><strong>Intersection Design (2 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `civil3d_intersection_list` | List all intersections in the drawing |
-| `civil3d_intersection_create` | Create an intersection between two road alignments |
 | `civil3d_intersection_get` | Get detailed properties of an intersection |
 
 </details>
@@ -433,7 +625,7 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 </details>
 
 <details>
-<summary><strong>COGO & Survey (9 tools)</strong></summary>
+<summary><strong>COGO & Survey (8 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -443,7 +635,6 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 | `civil3d_cogo_traverse` | Solve a traverse from start point through bearing/distance courses |
 | `civil3d_coordinate_system` | Coordinate system info and coordinate transformations |
 | `civil3d_survey_database_list` | List all survey databases |
-| `civil3d_survey_database_create` | Create a new survey database |
 | `civil3d_survey_figure_list` | List all survey figures |
 | `civil3d_survey_figure_get` | Get 3D vertex data for a specific survey figure |
 
@@ -484,7 +675,7 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 </details>
 
 <details>
-<summary><strong>Plan Production / Sheets (12 tools)</strong></summary>
+<summary><strong>Plan Production / Sheets (11 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -498,7 +689,6 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 | `civil3d_sheet_publish_pdf` | Publish sheet layouts to a PDF file |
 | `civil3d_sheet_view_create` | Create a viewport/view on a sheet layout |
 | `civil3d_sheet_view_set_scale` | Update the scale of a viewport |
-| `civil3d_plan_profile_sheet_create` | Create a Plan/Profile sheet for an alignment and profile |
 | `civil3d_plan_profile_sheet_update_alignment` | Update alignment and/or profile on an existing sheet |
 
 </details>
@@ -520,7 +710,7 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 </details>
 
 <details>
-<summary><strong>Workflow Automation (14 tools)</strong></summary>
+<summary><strong>Workflow Automation (13 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -537,19 +727,16 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 | `civil3d_workflow_pipe_network_design` | Size a gravity pipe network and optionally run hydraulic analysis |
 | `civil3d_workflow_plan_production_publish` | Publish a sheet set or explicit layout list to PDF output |
 | `civil3d_workflow_qc_fix_and_verify` | Audit drawing standards, apply fixes, and verify the result |
-| `civil3d_workflow_survey_import_adjust_figures` | Import survey LandXML, optionally adjust a network, and review resulting figures |
 
 </details>
 
 <details>
-<summary><strong>Quantity Takeoff (10 tools)</strong></summary>
+<summary><strong>Quantity Takeoff (8 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `civil3d_qty_surface_volume` | Cut/fill volumes between surfaces (with corridor or region scope) |
 | `civil3d_qty_earthwork_summary` | Running earthwork cut/fill summary table |
-| `civil3d_qty_corridor_volumes` | Subassembly material volumes by region for a corridor |
-| `civil3d_qty_material_list_get` | Retrieve material list defined on a corridor |
 | `civil3d_qty_pipe_network_lengths` | Total pipe lengths for a gravity pipe network |
 | `civil3d_qty_pressure_network_lengths` | Total pipe lengths for a pressure network |
 | `civil3d_qty_alignment_lengths` | Total length for one or more alignments |
@@ -567,7 +754,7 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 | `civil3d_hydrology` | Canonical hydrology tool for surface drainage, catchments, Tc, SSA, and multi-step workflows |
 | `civil3d_catchment` | Manages catchments and catchment groups, including properties, flow paths, and boundaries |
 | `civil3d_time_of_concentration` | Calculates Tc using supported methods and generates hydrographs |
-| `civil3d_stm` | Exports/imports STM files and opens Storm and Sanitary Analysis |
+| `civil3d_stm` | Opens interactive STM import/export and Storm and Sanitary Analysis dialogs |
 | `civil3d_hydrology_watershed_runoff_workflow` | Runs low-point or outlet-based watershed delineation through runoff estimation |
 | `civil3d_hydrology_runoff_detention_workflow` | Runs runoff estimation through detention sizing and optional stage-storage output |
 | `civil3d_hydrology_runoff_pipe_workflow` | Runs runoff estimation through gravity pipe HGL and hydraulic analysis |
@@ -627,12 +814,11 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 </details>
 
 <details>
-<summary><strong>Slope Analysis (2 tools)</strong></summary>
+<summary><strong>Slope Analysis (1 tool)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `civil3d_slope_geometry_calculate` | Calculate daylight line coordinates and slope geometry for cut/fill sections |
-| `civil3d_slope_stability_check` | Evaluate cut and fill slope stability along an alignment |
 
 </details>
 
@@ -647,14 +833,11 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 </details>
 
 <details>
-<summary><strong>Survey Processing (4 tools)</strong></summary>
+<summary><strong>Survey Processing (1 tool)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `civil3d_survey_observation_list` | List survey observations from a survey database |
-| `civil3d_survey_network_adjust` | Adjust survey networks (least squares, compass, transit, crandall) |
-| `civil3d_survey_figure_create` | Create survey figures from point numbers |
-| `civil3d_survey_landxml_import` | Import survey data from LandXML files |
 
 </details>
 
@@ -703,12 +886,176 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 
 | Civil 3D Version | Status | Notes |
 |---|---|---|
-| 2023 | Supported | Build the plugin against local Autodesk API DLLs in `C_References/` |
-| 2024 | Supported | Same Node server; compatibility is driven by the plugin reference set |
-| 2025 | Supported | Recommended when matching the sample docs and existing workflows |
-| 2026 | Supported with local refs | Copy the 2026 Civil 3D assemblies into `C_References/` before building |
+| 2023 | Not currently validated | Requires a separate compatibility review and a build against matching licensed assemblies. |
+| 2024 | Not currently validated | Requires a separate compatibility review and a build against matching licensed assemblies. |
+| 2025 | Not currently validated | Requires a separate compatibility review and a build against matching licensed assemblies. |
+| 2026 | Supported and live validated | Set `Civil3DReferencesPath` to the matching licensed 2026 managed assemblies. |
 
 For startup-suite and autoload registry details, use the version-specific guidance in [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
+
+---
+
+## Environment Variables
+
+The Node MCP server reads the following variables at startup. All are optional; defaults are shown in the **Default** column and are suitable for a local Civil 3D plus Copilot install.
+
+### Plugin connection (Node → Civil 3D plugin)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CIVIL3D_HOST` | `localhost` | Host the Civil 3D plugin's JSON-RPC TCP server binds to. |
+| `CIVIL3D_PORT` | `8080` | TCP port the plugin listens on (see `PluginRuntime.Port`). |
+| `CIVIL3D_CONNECT_TIMEOUT` | `5000` | Milliseconds the server waits for a TCP connection to the plugin before giving up. |
+| `CIVIL3D_COMMAND_TIMEOUT` | `120000` | Milliseconds any single JSON-RPC command may run before the Node side rejects the call. Increase for heavy corridor rebuilds. |
+| `CIVIL3D_MAX_RESPONSE_BYTES` | `8388608` | Maximum buffered response size accepted from the Civil 3D plugin. |
+| `CIVIL3D_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. Logs are written to stderr. |
+
+### MCP tool surface and policy
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CIVIL3D_ENABLE_TOOL_ALIASES` | `false` | Set to `true` before the MCP server starts to expose all specialized aliases instead of the compact 34-tool surface. |
+| `CIVIL3D_APPROVAL_MODE` | enforced | Set to `disabled` only in an isolated disposable test environment; production should retain parameter-bound approvals. |
+
+### Local Autodesk help search
+
+`civil3d_help` indexes the Autodesk Offline Help already installed with Civil 3D. It can search engineer phrasing such as “balance cut and fill” or “grading optimization,” return a cleaned Markdown topic, and attach the topic's useful screenshots and diagrams as MCP image content and `civil3d://help/images/...` resources. Matching Autodesk tutorial videos are returned as playable `civil3d://help/videos/...` player resources plus direct MP4 links. Decorative navigation icons are excluded. The drawing plugin does not need to be running for help searches.
+
+The first query builds a compressed local index under `%LOCALAPPDATA%\Civil3DMcp\help-index`; later starts reuse it until the Autodesk help files change. By default the server discovers folders named `Offline Help for Civil 3D <year> - <language>\Help` under Program Files and prefers 2026.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CIVIL3D_HELP_ROOT` | Auto-discovered | Optional absolute path to a Civil 3D Offline Help `Help` folder. |
+| `CIVIL3D_HELP_VERSION` | `2026` | Preferred installed documentation version. |
+| `CIVIL3D_HELP_CACHE_ROOT` | Local AppData | Override the generated search-index directory. |
+| `CIVIL3D_ENABLE_HELP_REINDEX` | `false` | Set to `true` to allow the tool's explicit `reindex` action. Automatic cache refresh remains enabled. |
+| `CIVIL3D_HELP_MAX_IMAGE_BYTES` | `6291456` | Maximum total bytes of inline image content returned by one topic request. |
+| `CIVIL3D_VIDEO_CATALOG` | Bundled 2026 catalog | Optional path to a refreshed JSON catalog produced by `scripts/scrape_autodesk_videos.py`. |
+
+The normal `search` and `get_topic` actions include the best matching video by default. Use `includeVideos: false` to suppress it, `maxVideos` to change the limit, or `search_videos` for a video-only lookup. Autodesk hosts these Civil 3D videos online, so playback requires internet access even though topic and image search remains local.
+
+Example calls:
+
+```json
+{ "action": "search", "query": "how do I use grading optimization?", "version": "2026" }
+```
+
+```json
+{ "action": "get_topic", "id": "<id from search>", "version": "2026", "includeImages": true }
+```
+
+```json
+{ "action": "search_videos", "query": "create grading criteria", "maxVideos": 2 }
+```
+
+### HTTP bridge (Copilot / local HTTP clients → Node)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MCP_HTTP_HOST` | `127.0.0.1` | Interface the HTTP bridge binds to. Keep this on loopback unless you know what you're doing. |
+| `MCP_HTTP_PORT` | `3000` | Port the HTTP bridge listens on. |
+| `MCP_HTTP_TOKEN` | *(unset)* | Optional shared secret. When set, every request to the bridge must include `Authorization: Bearer <token>` or `X-MCP-Token: <token>`. Leave unset to keep the loopback-only open mode. |
+| `MCP_HTTP_MAX_BODY_BYTES` | `1048576` | Maximum accepted `POST /execute` body size in bytes. Requests exceeding this receive `413 Payload Too Large`. |
+| `MCP_HTTP_ALLOWED_ORIGINS` | *(unset)* | Comma-separated browser origins allowed to call the bridge. Requests without an `Origin` header, such as native clients, are unaffected. |
+| `MCP_HTTP_ALLOWED_HOSTS` | Loopback hostnames | Comma-separated HTTP `Host` names accepted by the bridge. Required with `MCP_HTTP_TOKEN` for non-loopback binds. Ports are ignored during comparison. |
+
+The bridge refuses to start on a non-loopback host unless `MCP_HTTP_TOKEN` is
+configured. Docker Compose also requires this token and publishes the bridge on
+the host loopback interface by default.
+
+### Plugin filesystem boundaries
+
+Set these variables in the environment that launches Civil 3D. Roots are
+semicolon-separated on Windows; every caller-supplied path is canonicalized and
+must stay beneath an allowed root. If no roots are configured, the plugin uses
+the current user's Documents folder.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CIVIL3D_FILE_ROOTS` | User Documents | Shared fallback roots for imports and exports. |
+| `CIVIL3D_IMPORT_ROOTS` | `CIVIL3D_FILE_ROOTS` | Optional import-only roots for templates, DEM files, LandXML, STM, and other source artifacts. |
+| `CIVIL3D_EXPORT_ROOTS` | `CIVIL3D_FILE_ROOTS` | Optional export-only roots for drawings and generated reports. |
+
+Import/export tools enforce operation-specific extensions. Generated text and
+CSV artifacts are written to a temporary file in the destination directory and
+then atomically moved into place. Existing files are rejected unless the tool
+call explicitly supplies `overwrite: true`.
+
+### Plugin logging
+
+The native plugin writes a rotating log to
+`%LOCALAPPDATA%\Civil3DMcpPlugin\plugin.log` (5 MiB per file, three backups).
+Set `CIVIL3D_MCP_LOG_DIR` or `CIVIL3D_MCP_LOG_LEVEL` before launching Civil 3D
+to override its directory or minimum level. Plugin health reports
+`logFilePath`, `fileLoggingHealthy`, and `fileLoggingError`, so a file-write
+failure cannot remain silent.
+
+### HTTP bridge endpoints
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/health` | Cheap liveness (bridge status + registered tool count). Does **not** touch the Civil 3D plugin. |
+| `GET` | `/health/live` | Explicit alias for cheap bridge liveness. |
+| `GET` | `/health?deep=1` | Runs the `civil3d_health` tool, which round-trips to the plugin. Use when you need to know Civil 3D is actually reachable. |
+| `GET` | `/health/ready` | Readiness across the bridge, plugin connection, and bounded host queue; returns `503` when unavailable or full. |
+| `GET` | `/health/plugin` | Native plugin health and drawing telemetry. |
+| `GET` | `/health/queue` | Host queue and background-job health. |
+| `GET` | `/health/version` | Package, MCP SDK, and Node dependency versions without probing Civil 3D. |
+| `GET` | `/tools` | Full internal route catalog (219 names), independent of compact MCP exposure. |
+| `POST` | `/execute` | `{ "tool": "<name>", "parameters": { ... } }` — invokes any registered tool or legacy alias. |
+
+### Example: enable the shared-secret token
+
+```powershell
+$env:MCP_HTTP_TOKEN = "change-me-to-a-long-random-string"
+npm run start
+```
+
+Then from the Copilot or any client:
+
+```http
+POST /execute HTTP/1.1
+Host: 127.0.0.1:3000
+Authorization: Bearer change-me-to-a-long-random-string
+Content-Type: application/json
+
+{ "tool": "civil3d_health", "parameters": {} }
+```
+
+### Verify the live Civil 3D plugin
+
+With Civil 3D open, a drawing active, and `C3DMCPSTATUS` reporting port 8080,
+run this read-only P0 smoke check:
+
+```powershell
+npm run test:live-plugin
+```
+
+The full opt-in host suite creates disposable drawings and covers query,
+concurrency, document switching, create/undo, temporary volume-surface
+rollback, delete, job completion, and cancellation. It is guarded to prevent
+accidental mutations:
+
+```powershell
+$env:CIVIL3D_LIVE_SMOKE_CONFIRM = "DISPOSABLE_DRAWING"
+$env:CIVIL3D_LIVE_SMOKE_QC_PATH = "$env:USERPROFILE\Documents\civil3d-mcp-live-qc.txt"
+npm run test:live-host
+```
+
+To validate the richer contracts through a spawned production stdio MCP client
+(typed tools, annotations, progress, resources, health, and drawing context), run:
+
+```powershell
+npm run test:live-mcp-client
+```
+
+For safe-to-retry actions, clients may provide an `idempotencyKey` (maximum 128
+characters). Identical calls share the in-flight or recent result for two
+minutes; reusing the key with different parameters returns `CIVIL3D.CONFLICT`.
+
+It calls `getCivil3DHealth` and retrieves drawing context without mutating the
+open drawing. Set `CIVIL3D_HOST` and `CIVIL3D_PORT` first if the plugin does not
+use the default loopback endpoint.
 
 ---
 
@@ -716,8 +1063,9 @@ For startup-suite and autoload registry details, use the version-specific guidan
 
 **"Cannot connect to Civil 3D plugin"**
 - Civil 3D must be open with a drawing loaded
-- Type `MCPSTATUS` in Civil 3D — confirm the server shows as running on port 8765
-- Check Windows Firewall is not blocking `localhost:8765`
+- Type `C3DMCPSTATUS` in Civil 3D — confirm the server shows as running on port 8080
+- Check Windows Firewall is not blocking `localhost:8080`
+- If you moved the plugin to a non-default port, set `CIVIL3D_PORT` on the Node side to match
 
 **"No active document"**
 - Open a `.dwg` file in Civil 3D before making any tool calls
@@ -725,6 +1073,12 @@ For startup-suite and autoload registry details, use the version-specific guidan
 **"Alignment/Surface not found"**
 - Names are case-insensitive but must otherwise match exactly
 - Use the corresponding list tool first (e.g. `civil3d_alignment` → `list` action)
+
+**"I cannot see a specialized alias in my MCP client"**
+- This is expected with the recommended compact 34-tool surface
+- Call the canonical domain tool with its `action`, or set `CIVIL3D_ENABLE_TOOL_ALIASES=true` in the MCP server configuration
+- Restart the MCP client connection after changing the environment; changing an unrelated terminal does not update an already-running client-managed server
+- Use `civil3d://catalog/tools` or [tools.generated.md](./docs/tools.generated.md) to map aliases to canonical actions
 
 **Plugin won't load**
 - Verify the DLL targets the correct Civil 3D version
@@ -738,12 +1092,10 @@ For startup-suite and autoload registry details, use the version-specific guidan
 | Doc | Description |
 |---|---|
 | [DEPLOYMENT.md](./docs/DEPLOYMENT.md) | Full deployment: Docker, npm, env vars, registry autoload |
-| [HYDROLOGY_GUIDE.md](./docs/HYDROLOGY_GUIDE.md) | Hydrology workflow deep-dive |
-| [tools.md](./docs/tools.md) | Extended tool parameter reference |
-| [ULTIMATE-CIVIL3D-MCP-PLAN-V3.md](./docs/plans/ULTIMATE-CIVIL3D-MCP-PLAN-V3.md) | Big-picture implementation plan and feature map |
-| [domain-tool-migration-roadmap.md](./docs/plans/domain-tool-migration-roadmap.md) | Native domain migration roadmap for tool/workflow parity |
-| [civil3d_dynamic_mcp_blueprint.md](./docs/plans/civil3d_dynamic_mcp_blueprint.md) | Architecture blueprint for the dynamic MCP direction |
+| [tools.generated.md](./docs/tools.generated.md) | Release-checked canonical and alias catalog generated from the runtime manifest |
+| [tools.md](./docs/tools.md) | Extended parameter and workflow reference |
 | [CHANGELOG.md](./CHANGELOG.md) | Release history |
+| [ROADMAP.md](./ROADMAP.md) | Production-readiness phases and live-validation evidence |
 
 ---
 
@@ -761,4 +1113,4 @@ Pull requests are welcome. For major changes, open an issue first to discuss wha
 
 ## License
 
-[ISC](./LICENSE) — Steven Bouldin
+[MIT](./LICENSE) — Steven Bouldin

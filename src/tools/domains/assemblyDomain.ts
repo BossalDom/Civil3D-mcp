@@ -40,6 +40,7 @@ const canonicalAssemblyInputShape = {
     y: z.number(),
   }).optional(),
   description: z.string().optional(),
+  assemblyType: z.enum(["UndividedCrownedRoad", "UndividedPlanarRoad", "DividedCrownedRoad", "DividedPlanarRoad", "Other", "Railway"]).optional(),
   assemblyName: z.string().optional(),
   subassemblyType: z.string().optional(),
   side: z.enum(["Left", "Right", "Both"]).optional(),
@@ -63,7 +64,8 @@ const AssemblyCreateArgsSchema = z.object({
   insertionPoint: z.object({
     x: z.number(),
     y: z.number(),
-  }).optional(),
+  }),
+  assemblyType: z.enum(["UndividedCrownedRoad", "UndividedPlanarRoad", "DividedCrownedRoad", "DividedPlanarRoad", "Other", "Railway"]),
   description: z.string().optional(),
 });
 
@@ -121,11 +123,12 @@ export const ASSEMBLY_DOMAIN_DEFINITION: DomainToolDefinition = {
       safeForRetry: false,
       pluginMethods: ["createAssembly"],
       execute: async (args) => await withApplicationConnection(async (appClient) => {
-        const insertionPoint = args.insertionPoint as { x: number; y: number } | undefined;
+        const insertionPoint = args.insertionPoint as { x: number; y: number };
         return await appClient.sendCommand("createAssembly", {
           name: args.name,
-          insertX: insertionPoint?.x ?? 0,
-          insertY: insertionPoint?.y ?? 0,
+          insertX: insertionPoint.x,
+          insertY: insertionPoint.y,
+          assemblyType: args.assemblyType,
           description: args.description ?? "",
         });
       }),
@@ -186,7 +189,8 @@ export const ASSEMBLY_DOMAIN_DEFINITION: DomainToolDefinition = {
         insertionPoint: z.object({
           x: z.number(),
           y: z.number(),
-        }).optional(),
+        }),
+        assemblyType: z.enum(["UndividedCrownedRoad", "UndividedPlanarRoad", "DividedCrownedRoad", "DividedPlanarRoad", "Other", "Railway"]),
         description: z.string().optional(),
       },
       supportedActions: ["create"],
@@ -196,6 +200,7 @@ export const ASSEMBLY_DOMAIN_DEFINITION: DomainToolDefinition = {
           action: "create",
           name: rawArgs.name,
           insertionPoint: rawArgs.insertionPoint,
+          assemblyType: rawArgs.assemblyType,
           description: rawArgs.description,
         },
       }),

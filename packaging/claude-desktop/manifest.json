@@ -1,0 +1,137 @@
+{
+  "manifest_version": "0.3",
+  "name": "civil3d-mcp",
+  "display_name": "Civil 3D MCP",
+  "version": "1.2.1",
+  "description": "Connect Claude Desktop to a live Autodesk Civil 3D 2026 drawing.",
+  "long_description": "Civil 3D MCP gives Claude Desktop a compact set of tools for inspecting and modifying a live Civil 3D drawing, including alignments, surfaces, corridors, profiles, pipe networks, grading, hydrology, plan production, and QC. The native Civil3DMcpPlugin.dll must be loaded in Civil 3D before drawing tools can run.",
+  "author": {
+    "name": "Steven Bouldin",
+    "url": "https://github.com/Sacred-G"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sacred-G/Civil3D-mcp.git"
+  },
+  "homepage": "https://github.com/Sacred-G/Civil3D-mcp",
+  "documentation": "https://github.com/Sacred-G/Civil3D-mcp/blob/main/docs/DEPLOYMENT.md",
+  "support": "https://github.com/Sacred-G/Civil3D-mcp/issues",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.js"
+      ],
+      "env": {
+        "CIVIL3D_HOST": "${user_config.civil3d_host}",
+        "CIVIL3D_PORT": "${user_config.civil3d_port}",
+        "CIVIL3D_ENABLE_TOOL_ALIASES": "${user_config.enable_tool_aliases}",
+        "CIVIL3D_HELP_ROOT": "${user_config.help_root}",
+        "CIVIL3D_HELP_VERSION": "${user_config.help_version}",
+        "CIVIL3D_ENABLE_HELP_REINDEX": "${user_config.enable_help_reindex}",
+        "CIVIL3D_LOG_LEVEL": "${user_config.log_level}",
+        "MCP_HTTP_HOST": "127.0.0.1",
+        "MCP_HTTP_PORT": "${user_config.http_port}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "civil3d_health",
+      "description": "Check MCP server and native Civil 3D plugin health."
+    },
+    {
+      "name": "civil3d_drawing",
+      "description": "Inspect and manage the active Civil 3D drawing."
+    },
+    {
+      "name": "civil3d_surface",
+      "description": "Inspect, analyze, create, and modify Civil 3D surfaces."
+    },
+    {
+      "name": "civil3d_help",
+      "description": "Search Autodesk Civil 3D help and retrieve topics with screenshots, diagrams, and playable tutorial videos."
+    }
+  ],
+  "tools_generated": true,
+  "keywords": [
+    "autodesk",
+    "civil-3d",
+    "cad",
+    "engineering",
+    "automation"
+  ],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": [
+      "win32"
+    ],
+    "runtimes": {
+      "node": ">=18.17.0"
+    }
+  },
+  "user_config": {
+    "civil3d_host": {
+      "type": "string",
+      "title": "Civil 3D host",
+      "description": "Host running the native Civil 3D plugin.",
+      "default": "localhost",
+      "required": true
+    },
+    "civil3d_port": {
+      "type": "number",
+      "title": "Civil 3D plugin port",
+      "description": "JSON-RPC/TCP port exposed by Civil3DMcpPlugin.dll.",
+      "default": 8080,
+      "min": 1,
+      "max": 65535,
+      "required": true
+    },
+    "enable_tool_aliases": {
+      "type": "boolean",
+      "title": "Expose all tool aliases",
+      "description": "Off exposes the recommended compact 34-tool surface; on exposes all specialized drawing tools plus local help.",
+      "default": false,
+      "required": false
+    },
+    "help_root": {
+      "type": "string",
+      "title": "Civil 3D offline help folder",
+      "description": "Optional Help folder override. Leave blank to auto-discover Autodesk Offline Help under Program Files.",
+      "default": "",
+      "required": false
+    },
+    "help_version": {
+      "type": "string",
+      "title": "Preferred offline help version",
+      "description": "Civil 3D help version to prefer when more than one is installed.",
+      "default": "2026",
+      "required": false
+    },
+    "enable_help_reindex": {
+      "type": "boolean",
+      "title": "Allow help reindex",
+      "description": "Allows agents to explicitly rebuild the local offline-help search cache.",
+      "default": false,
+      "required": false
+    },
+    "log_level": {
+      "type": "string",
+      "title": "Server log level",
+      "description": "Logging threshold: debug, info, warn, or error.",
+      "default": "info",
+      "required": false
+    },
+    "http_port": {
+      "type": "number",
+      "title": "Local HTTP bridge port",
+      "description": "Loopback HTTP port for local clients. The default is 3000.",
+      "default": 3000,
+      "min": 1,
+      "max": 65535,
+      "required": true
+    }
+  }
+}

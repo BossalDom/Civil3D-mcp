@@ -97,6 +97,50 @@ public static class AlignmentCommands
     });
   }
 
+  public static Task<object?> SampleStationsAsync(JsonObject? parameters)
+  {
+    var name = PluginRuntime.GetRequiredString(parameters, "name");
+    var offset = PluginRuntime.GetOptionalDouble(parameters, "offset") ?? 0;
+    var stationsNode = PluginRuntime.GetParameter(parameters, "stations") as JsonArray;
+    if (stationsNode == null || stationsNode.Count == 0)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "alignmentSampleStations requires at least one station.");
+    }
+    if (stationsNode.Count > 200)
+    {
+      throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "alignmentSampleStations accepts at most 200 stations.");
+    }
+
+    var stations = stationsNode.Select(node =>
+      node?.GetValue<double>()
+      ?? throw new JsonRpcDispatchException("CIVIL3D.INVALID_INPUT", "Every station must be numeric."))
+      .ToArray();
+
+    return CivilExecution.ReadAsync<object?>((doc, civilDoc, database, transaction) =>
+    {
+      var alignment = CivilObjectUtils.FindAlignmentByName(civilDoc, transaction, name);
+      var units = CivilObjectUtils.LinearUnits(database);
+      var samples = new List<Dictionary<string, object?>>(stations.Length);
+
+      foreach (var station in stations)
+      {
+        double x = 0;
+        double y = 0;
+        alignment.PointLocation(station, offset, ref x, ref y);
+        samples.Add(new Dictionary<string, object?>
+        {
+          ["x"] = x,
+          ["y"] = y,
+          ["station"] = station,
+          ["offset"] = offset,
+          ["units"] = units,
+        });
+      }
+
+      return new Dictionary<string, object?> { ["samples"] = samples };
+    });
+  }
+
   public static Task<object?> PointToStationAsync(JsonObject? parameters)
   {
     var name = PluginRuntime.GetRequiredString(parameters, "name");

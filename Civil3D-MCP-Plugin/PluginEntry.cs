@@ -14,17 +14,27 @@ public sealed class PluginEntry : IExtensionApplication
     try
     {
       PluginRuntime.StartServer();
+      PluginLog.Info("PluginEntry", $"Civil3D MCP plugin initialized on port {PluginRuntime.Port}. Log file: {PluginLog.LogFilePath}");
       WriteMessage("Civil3D MCP plugin initialized.");
     }
     catch (System.Exception ex)
     {
+      PluginLog.Error("PluginEntry", "Plugin failed to initialize", ex);
       WriteMessage($"Civil3D MCP plugin failed to initialize: {ex.Message}");
     }
   }
 
   public void Terminate()
   {
-    PluginRuntime.StopServer();
+    try
+    {
+      PluginRuntime.StopServer();
+      PluginLog.Info("PluginEntry", "Civil3D MCP plugin terminated cleanly.");
+    }
+    catch (System.Exception ex)
+    {
+      PluginLog.Error("PluginEntry", "Error during plugin termination", ex);
+    }
   }
 
   [CommandMethod("C3DMCPSTART")]

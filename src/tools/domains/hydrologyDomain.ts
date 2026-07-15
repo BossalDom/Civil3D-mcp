@@ -192,6 +192,7 @@ const canonicalHydrologyInputShape = {
   timeOfConcentration_hr: z.number().optional(),
   stormDuration_hr: z.number().optional(),
   filePath: z.string().optional(),
+  overwrite: z.boolean().optional(),
   findLowPointSampleSpacing: z.number().optional(),
   catchmentSampleSpacing: z.number().optional(),
   runoffAreaUnits: AreaUnitsSchema.optional(),
@@ -342,12 +343,10 @@ const ListSsaCapabilitiesArgsSchema = z.object({
 
 const ExportStmArgsSchema = z.object({
   action: z.literal("export_stm"),
-  filePath: z.string().optional(),
 });
 
 const ImportStmArgsSchema = z.object({
   action: z.literal("import_stm"),
-  filePath: z.string().optional(),
 });
 
 const OpenStormSanitaryAnalysisArgsSchema = z.object({
@@ -715,7 +714,7 @@ export const HYDROLOGY_DOMAIN_DEFINITION: DomainToolDefinition = {
       safeForRetry: false,
       pluginMethods: ["exportStm"],
       execute: async (args) => await withApplicationConnection(
-        async (appClient) => await appClient.sendCommand("exportStm", { filePath: args.filePath }),
+        async (appClient) => await appClient.sendCommand("exportStm", {}),
       ),
     },
     import_stm: {
@@ -727,7 +726,7 @@ export const HYDROLOGY_DOMAIN_DEFINITION: DomainToolDefinition = {
       safeForRetry: false,
       pluginMethods: ["importStm"],
       execute: async (args) => await withApplicationConnection(
-        async (appClient) => await appClient.sendCommand("importStm", { filePath: args.filePath }),
+        async (appClient) => await appClient.sendCommand("importStm", {}),
       ),
     },
     open_storm_sanitary_analysis: {
@@ -924,10 +923,9 @@ export const HYDROLOGY_DOMAIN_DEFINITION: DomainToolDefinition = {
     {
       toolName: "civil3d_stm",
       displayName: "Civil 3D Storm & Sanitary Analysis (STM)",
-      description: "Manages STM export/import and Storm and Sanitary Analysis launch workflows.",
+      description: "Launches Civil 3D's interactive STM export/import and Storm and Sanitary Analysis dialogs. File selection remains under direct user control in Civil 3D.",
       inputShape: {
         action: z.enum(["list_ssa_capabilities", "export_stm", "import_stm", "open_storm_sanitary_analysis"]),
-        filePath: z.string().optional(),
       },
       supportedActions: ["list_ssa_capabilities", "export_stm", "import_stm", "open_storm_sanitary_analysis"],
       resolveAction: (rawArgs) => ({ action: String(rawArgs.action ?? ""), args: rawArgs }),

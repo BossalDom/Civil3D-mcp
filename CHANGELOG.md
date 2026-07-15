@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.2.1 — 2026-07-14
+
+### Production readiness
+
+- Added a self-contained Claude Desktop MCPB package, a byte-identical legacy
+  DXT compatibility artifact, installer configuration, checksum generation, and
+  official manifest validation through `npm run package:claude`.
+- Added a compact 33-tool default MCP surface while keeping 216 manifest-backed
+  canonical and alias routes available internally; set
+  `CIVIL3D_ENABLE_TOOL_ALIASES=true` to expose the full 218-tool MCP surface.
+- Added first-class MCP output schemas, structured content, annotations,
+  resources, progress notifications, and report-resource retrieval.
+- Added parameter-bound, drawing-bound approval receipts, bounded serialized
+  host execution, disconnect cancellation, idempotency, and stable errors.
+- Added bounded background jobs for publishing, imports, corridor rebuilds, and
+  bulk QC, with terminal retention and cancellation telemetry.
+- Added liveness, readiness, plugin, queue, and version endpoints on the local
+  HTTP bridge at port 3000.
+- Added rotating native plugin logs with file-health and last-error telemetry.
+- Added CI, generated tool documentation, manifest/dispatcher parity, package
+  inspection, startup smoke, and opt-in live Civil 3D host validation.
+- Removed tracked Autodesk assemblies; Release builds resolve licensed Civil 3D
+  2026 references through `Civil3DReferencesPath`.
+
+### Live validation
+
+- Validated plugin 1.2.1.0 against Civil 3D 2026 on port 8080.
+- Validated the spawned stdio MCP client, HTTP registration and routing,
+  approvals, concurrency, document switching, create/undo/delete, temporary
+  TIN-volume rollback, job cancellation/completion, and response limits.
+
 ## v1.1.0 — 2026-03-17
 
 ### Summary

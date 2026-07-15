@@ -51,6 +51,7 @@ describe("workflow domain execution", () => {
       includePipeNetworks: undefined,
       includeSurfaces: undefined,
       includeLabels: undefined,
+      overwrite: false,
     });
     expect(result.workflow).toBe("corridor_qc_report");
     expect(result.status).toBe("completed_with_warnings");
@@ -255,6 +256,7 @@ describe("workflow domain execution", () => {
     expect(sendCommandMock).toHaveBeenCalledWith("projectStartupWorkflow", {
       templatePath: "C:/templates/civil3d.dwt",
       saveAs: "C:/projects/startup.dwg",
+      overwrite: false,
     });
     expect(result.status).toBe("completed");
     expect(result.steps.map((step) => step.action)).toEqual([
@@ -312,6 +314,7 @@ describe("workflow domain execution", () => {
       ],
       dryRun: undefined,
       saveAs: "C:/Projects/Roadway/ref-setup.dwg",
+      overwrite: false,
     });
     expect(result.status).toBe("completed");
     expect(result.steps.map((step) => step.action)).toEqual([

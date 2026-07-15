@@ -46,6 +46,7 @@ docs/tool-coverage-audit.md
 
 # Agent config files
 agents/
+.devin/
 
 # Help files (4041 files in docs/help/)
 docs/help/

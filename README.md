@@ -15,6 +15,7 @@
 
   <p>
     <a href="#quick-start">Quick Start</a> •
+    <a href="#autodesk-help-in-chat">Autodesk Help</a> •
     <a href="#installation">Installation</a> •
     <a href="./docs/DEPLOYMENT.md">Deployment</a> •
     <a href="./docs/tools.generated.md">Generated Tool Reference</a>
@@ -41,8 +42,10 @@ This is the **MCP server** (TypeScript). You also need the **Civil 3D .NET plugi
 - Production-ready host execution now includes bounded queues and jobs,
   cancellation, idempotency, structured telemetry, readiness endpoints, and
   observable rotating plugin logs.
-- The default MCP surface is compact: 33 public tools cover every domain. The
-  complete 218-tool surface can be enabled when a client needs specialized aliases.
+- **New:** `civil3d_help` searches the locally installed Autodesk Civil 3D help,
+  returns cited topics with screenshots, and surfaces matching tutorial videos in chat.
+- The default MCP surface is compact: 34 public tools cover every domain. The
+  complete 219-tool surface can be enabled when a client needs specialized aliases.
 - Native workflow handlers cover major QC, grading, hydrology, plan-production,
   and data-shortcut flows instead of relying only on client-side orchestration.
 - Claude Code can be registered with a single project-scoped command that
@@ -51,6 +54,49 @@ This is the **MCP server** (TypeScript). You also need the **Civil 3D .NET plugi
   compatibility artifact, generated with `npm run package:claude`.
 - The release-checked inventory is generated from the runtime manifest at
   [`docs/tools.generated.md`](./docs/tools.generated.md).
+
+---
+
+## Autodesk Help in Chat
+
+Agents can now answer Civil 3D how-to questions from the Autodesk Offline Help
+installed on the user's machine. The `civil3d_help` tool auto-discovers Civil 3D
+help under Program Files, builds a local search index, and returns:
+
+- cleaned, version-matched Autodesk topic text with a canonical citation;
+- useful screenshots and diagrams directly in the chat response;
+- the best matching Autodesk tutorial video as a player resource;
+- a direct MP4 link when the chat client cannot embed the player.
+
+For example, an agent can search for grading guidance:
+
+```json
+{
+  "action": "search",
+  "query": "how do I create grading criteria?",
+  "version": "2026"
+}
+```
+
+Or request only matching videos:
+
+```json
+{
+  "action": "search_videos",
+  "query": "create grading criteria",
+  "maxVideos": 2
+}
+```
+
+The bundled 2026 catalog currently contains 47 Civil 3D tutorial videos. See the
+[Autodesk grading-criteria video](https://help.autodesk.com/videos/hmdXBmbDrmD4RJG46g4xxLXnNrBqHIIC/video.mp4)
+for an example. Topic and image retrieval remains local and works without the
+Civil 3D drawing plugin; Autodesk-hosted video playback requires internet access.
+
+The first topic query creates a compressed cache under
+`%LOCALAPPDATA%\Civil3DMcp\help-index`. Later queries reuse that cache and full
+topic retrieval is effectively immediate. See [Local Autodesk help search](#local-autodesk-help-search)
+for configuration and additional examples.
 
 ---
 
@@ -110,8 +156,10 @@ For a source-based or Claude Code installation:
 
 ## Features
 
-- **Compact default MCP surface** with 33 public tools; all 216 manifest-backed
+- **Compact default MCP surface** with 34 public tools; all 219 registered
   routes remain internally callable or available as opt-in aliases
+- **Local Autodesk help in chat** — version-matched topics, screenshots,
+  diagrams, citations, and playable Civil 3D tutorial videos
 - **Native workflow execution** for corridor QC, surface comparison, project startup, grading conversion, plan publish, data shortcuts, and hydrology pipelines
 - **Full road design pipeline** — alignments, profiles, corridors, cross-sections, superelevation
 - **Surface analysis** — elevation bands, slope distribution, aspect, watershed, cut/fill volumes
@@ -150,9 +198,9 @@ names for actions already available through a canonical domain tool.
 
 | Surface | Exposed tools | How to call an operation |
 |---|---:|---|
-| Default MCP client | 33 | Call a canonical domain tool and provide `action`. |
-| MCP client with aliases enabled | 218 | Use either canonical tools or specialized alias names. |
-| HTTP `/execute` and orchestration | 218 | All registered routes remain internally callable in either mode. |
+| Default MCP client | 34 | Call a canonical domain tool and provide `action`. |
+| MCP client with aliases enabled | 219 | Use either canonical tools or specialized alias names. |
+| HTTP `/execute` and orchestration | 219 | All registered routes remain internally callable in either mode. |
 
 For example, these calls are equivalent:
 
@@ -398,7 +446,7 @@ Restart your client. When you see the **hammer icon**, the MCP connection is liv
 
 ---
 
-## Tool Reference (216 manifest entries)
+## Tool Reference (217 catalog entries)
 
 The generated, release-checked inventory is [docs/tools.generated.md](./docs/tools.generated.md).
 It includes both canonical tools and specialized aliases. Canonical rows list
@@ -965,7 +1013,7 @@ failure cannot remain silent.
 | `GET` | `/health/plugin` | Native plugin health and drawing telemetry. |
 | `GET` | `/health/queue` | Host queue and background-job health. |
 | `GET` | `/health/version` | Package, MCP SDK, and Node dependency versions without probing Civil 3D. |
-| `GET` | `/tools` | Full internal route catalog (218 names), independent of compact MCP exposure. |
+| `GET` | `/tools` | Full internal route catalog (219 names), independent of compact MCP exposure. |
 | `POST` | `/execute` | `{ "tool": "<name>", "parameters": { ... } }` — invokes any registered tool or legacy alias. |
 
 ### Example: enable the shared-secret token
@@ -1039,7 +1087,7 @@ use the default loopback endpoint.
 - Use the corresponding list tool first (e.g. `civil3d_alignment` → `list` action)
 
 **"I cannot see a specialized alias in my MCP client"**
-- This is expected with the recommended compact 33-tool surface
+- This is expected with the recommended compact 34-tool surface
 - Call the canonical domain tool with its `action`, or set `CIVIL3D_ENABLE_TOOL_ALIASES=true` in the MCP server configuration
 - Restart the MCP client connection after changing the environment; changing an unrelated terminal does not update an already-running client-managed server
 - Use `civil3d://catalog/tools` or [tools.generated.md](./docs/tools.generated.md) to map aliases to canonical actions

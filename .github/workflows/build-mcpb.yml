@@ -1,0 +1,19 @@
+name: Build MCPB Extension
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    - run: npm install
+    - run: npm run package:claude
+    - uses: actions/upload-artifact@v4
+      with:
+        name: claude-extension
+        path: dist/claude-desktop/*.mcpb

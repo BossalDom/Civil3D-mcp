@@ -12,7 +12,7 @@
 
   <Target Name="ValidateCivil3DReferences" BeforeTargets="PrepareForBuild">
     <Error Condition="!Exists('$(Civil3DReferencesPath)\accoremgd.dll') Or !Exists('$(Civil3DReferencesPath)\AcDbMgd.dll') Or !Exists('$(Civil3DReferencesPath)\acmgd.dll') Or !Exists('$(Civil3DReferencesPath)\AecBaseMgd.dll') Or !Exists('$(Civil3DReferencesPath)\AeccDbMgd.dll') Or !Exists('$(Civil3DReferencesPath)\AeccPressurePipesMgd.dll')"
-      Text="Civil 3D 2026 managed references were not found at '$(Civil3DReferencesPath)'. Set /p:Civil3DReferencesPath=&lt;licensed Civil 3D/ObjectARX reference directory&gt;. Autodesk assemblies must not be committed." />
+      Text="Civil 3D 2026 managed references were not found at '$(Civil3DReferencesPath)'. Set /p:Civil3DReferencesPath=&lt;licensed Civil 3D/ObjectARX reference directory&gt;, or use the repo-root C_References fallback." />
   </Target>
 
   <ItemGroup>

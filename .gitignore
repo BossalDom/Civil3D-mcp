@@ -8,6 +8,8 @@ dist/
 **/obj/
 *.dll
 *.pdb
+!C_References/
+!C_References/*.dll
 
 # IDE
 .vs/
@@ -54,9 +56,6 @@ docs/help/
 # External projects
 Civil3D-AI-CoPilot-master/
 MCPControl-main/
-
-# C# References
-C_References/
 
 # Templates
 templates/

@@ -290,7 +290,7 @@ narrow transaction; callers never mutate a drawing directly from Node.js.
 | Node.js | 18+ |
 | Civil 3D | 2026 (live validated) |
 | .NET SDK | 8.0 |
-| Civil 3D API refs | Licensed local installation or untracked reference directory |
+| Civil 3D API refs | Licensed local installation or repo-root `C_References/` |
 | Visual Studio | 2022 recommended |
 
 ---
@@ -347,9 +347,9 @@ bridge port (default `3000`).
 
 ### 2 — Build & Load the C# Plugin
 
-**Prerequisites:** Civil 3D 2026, .NET 8 SDK, and licensed local Civil 3D managed
-API assemblies. Autodesk binaries are intentionally not tracked or published by
-this repository.
+**Prerequisites:** Civil 3D 2026, .NET 8 SDK, and Civil 3D managed API
+assemblies. Repo-root `C_References/` is the default fallback path used by the
+plugin project when `Civil3DReferencesPath` is omitted.
 
 ```powershell
 $refs = "C:\Program Files\Autodesk\AutoCAD 2026\C3D"
@@ -358,8 +358,8 @@ dotnet build .\Civil3D-MCP-Plugin\Civil3DMcpPlugin.csproj -c Release `
 # Output: Civil3D-MCP-Plugin\bin\Release\net8.0-windows\Civil3DMcpPlugin.dll
 ```
 
-An untracked `C_References` directory remains the local fallback when
-`Civil3DReferencesPath` is omitted.
+Repo-root `C_References/` is used automatically when `Civil3DReferencesPath`
+is omitted.
 
 At minimum, the configured directory must contain:
 

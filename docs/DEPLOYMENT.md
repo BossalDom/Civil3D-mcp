@@ -220,9 +220,9 @@ The output DLL is in `Civil3D-MCP-Plugin/bin/Release/net8.0-windows/`.
 
 ### Civil 3D reference DLLs
 
-Autodesk assemblies are not tracked, published, or copied to the plugin output.
-Pass a licensed local reference directory with `Civil3DReferencesPath`. An
-untracked `C_References/` directory remains the local fallback and must include:
+Autodesk assemblies are not copied to the plugin output. Pass a licensed local
+reference directory with `Civil3DReferencesPath`, or use the repo-root
+`C_References/` fallback, which must include:
 
 ```
 C_References/

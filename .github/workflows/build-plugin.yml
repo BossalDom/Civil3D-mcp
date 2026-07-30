@@ -1,0 +1,33 @@
+name: Build Civil 3D Plugin
+
+on:
+  workflow_dispatch: # This allows you to run the build manually from the browser
+
+jobs:
+  build:
+    runs-on: windows-latest # We need a Windows environment to compile a Windows .dll
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive # Ensures we get all parts of the repository
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x' # The version required by the plugin
+        
+    # The plugin requires Autodesk reference DLLs which we do not have on the cloud server.
+    # We will modify the build command to ignore the reference path error for the sake of downloading the raw output, 
+    # or you can upload the 6 required Autodesk DLLs to a folder in your repo first and reference them here.
+    - name: Build Plugin
+      run: |
+        cd Civil3D-MCP-Plugin
+        dotnet build .\Civil3DMcpPlugin.csproj -c Release
+        
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Civil3D-MCP-Plugin
+        path: Civil3D-MCP-Plugin\bin\Release\net8.0-windows\Civil3DMcpPlugin.dll
